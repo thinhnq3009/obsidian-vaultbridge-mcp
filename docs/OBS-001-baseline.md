@@ -1,6 +1,6 @@
 # OBS-001 — Regression fixtures and safety baseline
 
-Status: **IMPLEMENTED_AWAITING_REVIEW** (baseline implementation only).
+Status: OBS-001 baseline merged in PR #1. OBS-002 follow-up is **IMPLEMENTED_AWAITING_REVIEW** in [PR #2](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/pull/2): K01/K02 are fixed on that branch; K03–K06 remain unresolved. Baseline observations and test counts below describe OBS-001 unless a follow-up is explicitly noted.
 
 ## Source and limits
 
@@ -8,7 +8,7 @@ Status: **IMPLEMENTED_AWAITING_REVIEW** (baseline implementation only).
 - Branch: `codex/obs-001-regression-baseline`.
 - Base: latest `origin/main`, `1edecc07dfd2e45d1a2ac685faff6f8534f1b3e0`, fetched and rechecked on 2026-10-19.
 - This is the owner-renamed repository identified in OBS-000. The current task explicitly authorizes testing its latest main. The separate checkout preserves the existing `codex/npm-readme-migration` checkout and its uncommitted README / untracked PROJECT_REVIEW.md.
-- Source package remains `obsidian-local-rest-mcp@1.0.0`, Node `>=20.11.0`. No package metadata or production source was changed.
+- Source package remains `obsidian-local-rest-mcp@1.0.0`, Node `>=20.11.0`. OBS-001 changed no package metadata or production source; OBS-002's focused production fixes are recorded below.
 - Direct `npm view obsidian-vaultbridge-mcp version dist-tags repository engines gitHead --json` still returns `0.1.0-alpha.0`, both `latest` and `alpha`, and the old repository URL; no `gitHead`. These tests establish a **source-main baseline**, not correspondence with the published tarball. OBS-000's release provenance gap remains unresolved.
 - Environment: Linux, Node `v24.20.0`, npm `11.19.0`; dependencies installed from the unchanged lockfile with `npm ci --ignore-scripts --no-audit --no-fund`.
 
@@ -21,7 +21,7 @@ All new filesystem tests construct a unique `os.tmpdir()/obs-001-*` root with se
 | Comments.md | YAML header/inline/nested comments, quoted Unicode owner, nested field, flow-array tags |
 | BOM-CRLF.md | Explicit UTF-8 BOM, CRLF, Unicode, multiple sections, untouched tail |
 | Unicode.md | Vietnamese, Japanese, emoji, composed/decomposed accents |
-| Syntax.md | Numeric #123, nested tag, aliased/section wikilink, external link, inline code, backtick/tilde fences |
+| Syntax.md | Numeric #123 (and #6120 added in OBS-002), nested tag, aliased/section wikilink, external link, inline code, backtick/tilde fences |
 | Duplicate.md | Duplicate heading, child section, final sentinel section |
 | Long.md | 4096 repeated Unicode lines and a final heading sentinel |
 | Invalid.md | Unclosed YAML sequence, intact Markdown body |
@@ -30,7 +30,7 @@ All new filesystem tests construct a unique `os.tmpdir()/obs-001-*` root with se
 | --- | --- |
 | `test/regressionBaseline.test.ts` | Exact reads/revisions, metadata, create/replace/append, frontmatter and heading operations, long/duplicate headings, missing/stale revisions, two backend writers, injected rename failure and retry |
 | `test/regressionSafety.test.ts` | Traversal/absolute/UNC/NUL paths, external and in-vault scope symlinks, new descendants, prefix boundaries, search exclusion/scope/freshness, UTF-8 size limits |
-| `test/regressionTools.test.ts` | Exact 31-tool inventory and schema presence, metadata output gap, MCP errors, bulk success/failure semantics, schema revision enforcement, all content mutation registrations in read-only mode |
+| `test/regressionTools.test.ts` | Exact 31-tool inventory and schema presence, metadata response contract (K02 fixed in OBS-002), MCP errors, bulk success/failure semantics, schema revision enforcement, all content mutation registrations in read-only mode |
 | `test/regressionLocalRest.test.ts` | Mocked adapter mutation forwarding and read-only status gaps |
 
 Existing STDIO startup, HTTP authentication, canvas validation and watcher indexing tests remain unchanged. The configuration fallback test received the CI portability correction described below. New symlink tests actually run on Linux; inability to create a symlink is a failure, not a silent pass.
@@ -47,6 +47,17 @@ Existing STDIO startup, HTTP authentication, canvas validation and watcher index
 - All 18 registered content mutation tools reject read-only calls (19 cases including write create/replace): write, bulk, append, heading/frontmatter, all nine canvas mutations, move, rename, delete, create-folder. Valid canvas inputs ensure validation errors cannot hide a bypass. Every seeded file remains byte-identical.
 - Search excludes `.obsidian`, `.git` and static external symlinks when rebuilding. This does not imply read-scope enforcement: K03 is a confirmed exception.
 
+## Resolved in OBS-002
+
+[Commit b33f975](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/commit/b33f975d14b5929465035c14c13685c6d1834cd6) fixes K01/K02 in PR #2 and converts both KNOWN characterization tests into desired-behavior regressions. The original failures below are historical evidence, not outstanding defects on the OBS-002 branch.
+
+| ID | Baseline observation → corrected behavior | Regression evidence |
+| --- | --- | --- |
+| K01 | Numeric issue reference `#123` was emitted as tag `123`. Numeric-only body references, including `#123` and `#6120`, are now excluded while mixed/nested/Unicode tags and frontmatter tag forms are preserved. | `test/regressionBaseline.test.ts`: `K01: excludes numeric issue references while retaining valid tags`; focused cases in `test/markdown.test.ts` |
+| K02 | MCP metadata returned only path/frontmatter/stat/tags, dropping backend headings/links/revision. It now forwards those fields when provided, preserving optionality and empty arrays without inventing a revision, returning content or making an extra full-note request. | `test/regressionTools.test.ts`: `K02: MCP metadata exposes backend headings, links and revision`; legacy/empty-array compatibility cases |
+
+Both converted regressions failed twice before the production fix. Afterward, the focused metadata/MCP run passed 78 tests; `npm test` passed all 156 tests across 13 files; lint, build and `git diff --check` passed. Tests used isolated temporary vaults. These results supersede only the K01/K02 failure status; K03–K06 and the release-provenance gap remain open.
+
 ## Known failures retained for follow-up
 
 Tests labelled **KNOWN Kxx** assert the exact observed defective behavior. They are characterization tests, not skipped tests or successful safety assertions. When a behavior is fixed in a separately authorized task, change its assertion to the desired invariant. A green baseline suite must never be interpreted as a release/safety gate passing.
@@ -55,14 +66,12 @@ All source links below pin the tested base SHA; local test names identify reprod
 
 | ID | Desired behavior / observed failure | Evidence / source |
 | --- | --- | --- |
-| K01 | Issue reference `#123` should not be a tag; currently tags include `123`. Fence/inline-code exclusions do pass. | `metadata fixtures > KNOWN K01`; [tag regex](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/blob/1edecc07dfd2e45d1a2ac685faff6f8534f1b3e0/src/backend/markdown.ts#L44) |
-| K02 | Metadata MCP response should expose backend headings/links/revision; currently only path/frontmatter/stat/tags are returned. Schema makes omitted fields optional, so SDK validation succeeds. | `actual MCP contracts > KNOWN K02`; [response projection](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/blob/1edecc07dfd2e45d1a2ac685faff6f8534f1b3e0/src/tools/readNoteMetadata.ts#L38) |
 | K03 | Search should enforce readPaths; a denied direct read of Comments.md is still returned with its body snippet by search. **Confirmed read-scope breach in temporary vault.** | `filesystem safety > KNOWN K03`; [unfiltered delegation](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/blob/1edecc07dfd2e45d1a2ac685faff6f8534f1b3e0/src/backend/filesystem.ts#L214) |
 | K04 | Immediate search should see a successful write; scan + watch off with a nonempty initial vault misses Created.md until explicit rebuild. | `filesystem safety > KNOWN K04`; [cached documents](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/blob/1edecc07dfd2e45d1a2ac685faff6f8534f1b3e0/src/backend/search.ts#L83) |
 | K05 | Every mutation should enforce final UTF-8 byte limit; append, heading and frontmatter edits write oversized files that then cannot be read by the same backend. Create/replace correctly reject oversized input. | `filesystem safety > KNOWN K05`; [unchecked transformed content](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/blob/1edecc07dfd2e45d1a2ac685faff6f8534f1b3e0/src/backend/filesystem.ts#L228) |
 | K06 | Local REST should enforce safety options or explicitly reject unsupported contracts. Four note mutations forward calls despite readOnly=true, disallowed path and stale revision, dropping revision (also heading occurrence and write mode). Status reports readOnly=false. This is an adapter-boundary finding with mocks, not a live REST integration result. | `Local REST adapter boundary > KNOWN K06` (5 tests); [adapter methods](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/blob/1edecc07dfd2e45d1a2ac685faff6f8534f1b3e0/src/backend/localRest.ts#L41), [status](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/blob/1edecc07dfd2e45d1a2ac685faff6f8534f1b3e0/src/backend/localRest.ts#L16) |
 
-No production fixes were made. K03/K06 require owner review before treating scope/read-only safety as established. This task does not initiate OBS-002 or make a release decision.
+OBS-001 itself made no production fixes; the subsequent OBS-002 fixes are recorded above. K03/K06 still require owner review before treating scope/read-only safety as established. Neither the baseline nor this follow-up makes a release decision.
 
 ## Recorded semantics and tool gap matrix
 
@@ -71,7 +80,7 @@ No production fixes were made. K03/K06 require owner review before treating scop
 | Full read, write create/replace/overwrite alias, append, heading/frontmatter patch | EXISTS; tested filesystem contract as above |
 | Bulk note writes | EXISTS, sequential per-file commits. **B01:** first success remains after second file conflicts; failed file unchanged, later file absent, MCP returns only error with no partial-success structured result. Cross-file ACID is outside the approved V1 scope. [Loop](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/blob/1edecc07dfd2e45d1a2ac685faff6f8534f1b3e0/src/tools/writeNotesBulk.ts#L42) |
 | Frontmatter source preservation | **B02:** comments/properties/body survive, but changing status normalizes unrelated `[project/test, tiếng-việt]` to `[ project/test, tiếng-việt ]`. Recorded formatting limitation, no body corruption observed. [Serializer](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/blob/1edecc07dfd2e45d1a2ac685faff6f8534f1b3e0/src/backend/markdown.ts#L111) |
-| Metadata / search | PARTIAL: K01–K04 |
+| Metadata / search | At OBS-001: PARTIAL, K01–K04. After OBS-002: K01/K02 fixed; search remains PARTIAL due to K03/K04. |
 | `obsidian_read_note_section`, `obsidian_apply_note_edits`, `obsidian_validate_note` | MISSING from complete 31-tool inventory; no speculative tests or implementations |
 | Automatic/protected agents_edit_at | Not implemented by this task; no release/policy claim |
 | Active-file/open-file | Advertised, but return errors for filesystem backend; tested |
