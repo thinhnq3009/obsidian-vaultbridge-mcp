@@ -33,7 +33,7 @@ All new filesystem tests construct a unique `os.tmpdir()/obs-001-*` root with se
 | `test/regressionTools.test.ts` | Exact 31-tool inventory and schema presence, metadata output gap, MCP errors, bulk success/failure semantics, schema revision enforcement, all content mutation registrations in read-only mode |
 | `test/regressionLocalRest.test.ts` | Mocked adapter mutation forwarding and read-only status gaps |
 
-Existing tests remain unchanged, including STDIO startup, HTTP authentication, canvas validation, watcher indexing and configuration. New symlink tests actually run on Linux; inability to create a symlink is a failure, not a silent pass.
+Existing STDIO startup, HTTP authentication, canvas validation and watcher indexing tests remain unchanged. The configuration fallback test received the CI portability correction described below. New symlink tests actually run on Linux; inability to create a symlink is a failure, not a silent pass.
 
 ## Observed passing invariants
 
@@ -118,10 +118,14 @@ OBS-001:
 
 Coverage uses the unchanged Vitest configuration; overall totals include the new fixture helper. No thresholds/configuration were changed. Coverage percentages do not supersede the known failures above.
 
-Additional `npx tsc --noEmit` exits 2 for unchanged `test/filesystem.test.ts:31` and `test/http.test.ts:29,77` (`exactOptionalPropertyTypes`: optional revision / SDK transport sessionId). An isolated archive of unmodified origin/main with the same installed dependencies reproduces the same three diagnostics. No new regression-test type errors remain. The repository's required build script excludes tests and passes. Existing tests were left untouched to keep OBS-001 additive.
+Additional `npx tsc --noEmit` exits 2 for unchanged `test/filesystem.test.ts:31` and `test/http.test.ts:29,77` (`exactOptionalPropertyTypes`: optional revision / SDK transport sessionId). An isolated archive of unmodified origin/main with the same installed dependencies reproduces the same three diagnostics. No new regression-test type errors remain. The repository's required build script excludes tests and passes. The initial baseline left existing tests untouched; the CI follow-up below adjusts one configuration test.
 
 Raw before/final command logs, first-run failure output, and typecheck comparison are saved beside this checkout in `../obs-001-evidence/`. The first regression run exposed B02's formatting normalization; its assertion was updated to record that observed behavior, with no production edit. The durable summary and reproducible cases are in this branch; logs/coverage HTML remain local evidence.
 
+### CI portability follow-up (2026-10-20)
+
+PR #1's macOS Node 20/22 jobs exposed an existing configuration-test assumption: `process.cwd()` resolves `/var` to `/private/var`, while `path.resolve(vault)` retains the temporary directory's symlink spelling. The fallback assertion now compares against `process.cwd()`, which is the configuration contract. The same test also enters a synthetic vault through a directory symlink (a junction on Windows), reproducing the original assertion failure on Linux before the correction. Both fallback cases and all 15 configuration tests pass locally after the correction. The full suite passes with 148 tests across 13 files; build, lint and `git diff --check` also pass. No production behavior changed.
+
 ## Rollback
 
-Only five new files under `test/` plus this baseline report are added. Review/revert the OBS-001 commit to remove them; there are no runtime, lockfile, configuration, package, migration, vault-content or published-artifact changes to reverse. Keep the separate checkout until review. Do not reset/clean the pre-existing checkout. If undoing the Obsidian handoff, read the latest task revision and replace only its Handoff with the saved pre-update section.
+Five new files under `test/` plus this baseline report are added; the CI follow-up also adjusts `test/config.test.ts`. Review/revert the corresponding commits to remove them; there are no runtime, lockfile, configuration, package, migration, vault-content or published-artifact changes to reverse. Keep the separate checkout until review. Do not reset/clean the pre-existing checkout. If undoing the Obsidian handoff, read the latest task revision and replace only its Handoff with the saved pre-update section.
