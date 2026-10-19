@@ -55,14 +55,17 @@ describe("loadConfig", () => {
     expect(config.vaultPath).toBe(path.resolve(openVault));
   });
 
-  it("falls back to the current directory when it is an Obsidian vault", async () => {
+  it.each([false, true])("falls back to the current directory when it is an Obsidian vault (symlink: %s)", async (useSymlink) => {
     const root = await createTempDir();
-    const vault = await createVault(root, "Current");
+    const target = await createVault(root, "Current");
+    const vault = useSymlink ? path.join(root, "CurrentLink") : target;
+    if (useSymlink) await fs.symlink(target, vault, "junction");
     process.chdir(vault);
 
     const config = loadConfig({}, []);
 
-    expect(config.vaultPath).toBe(path.resolve(vault));
+    // cwd may resolve directory symlinks, including macOS /var -> /private/var.
+    expect(config.vaultPath).toBe(process.cwd());
   });
 
   it("fails when no vault can be auto-detected", async () => {
