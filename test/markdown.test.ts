@@ -20,6 +20,25 @@ describe("Markdown engine", () => {
     expect(patched).toContain("# Same\nUpdated");
   });
 
+  it("excludes numeric-only body references while keeping mixed and Unicode tags", () => {
+    const metadata = parseMetadata("#123 #6120 #１２３ #123abc #123/456 #6120-x #_123 #tiếng-việt #日本語 #123abc");
+    expect(metadata.tags).toEqual(["123abc", "123/456", "6120-x", "_123", "tiếng-việt", "日本語"]);
+  });
+
+  it.each([
+    "tags: [project/test, '#tiếng-việt', project/test]",
+    "tags:\n  - project/test\n  - '#tiếng-việt'\n  - project/test",
+    "tags: 'project/test, #tiếng-việt project/test'",
+    "tag: 'project/test, #tiếng-việt project/test'",
+  ])("preserves supported frontmatter tag forms: %s", (yaml) => {
+    expect(parseMetadata(`---\n${yaml}\n---\n#123 #6120 #body`).tags).toEqual(["body", "project/test", "tiếng-việt"]);
+  });
+
+  it("extracts wikilink targets independently of aliases and anchors and retains standard link URLs", () => {
+    const metadata = parseMetadata("[[Notes/Plain]] [[Notes/Aliased|Alias]] [[Notes/Anchored#Part]] [[Notes/日本語#見出し|表示]] [[Notes/Plain]] [site](https://example.com/#part) [local](Notes/Target.md#Part)");
+    expect(metadata.links).toEqual(["Notes/Plain", "Notes/Aliased", "Notes/Anchored", "Notes/日本語", "https://example.com/#part", "Notes/Target.md#Part"]);
+  });
+
   it("preserves BOM and CRLF while patching frontmatter", () => {
     const content = "\uFEFF---\r\nstatus: open # keep\r\nowner: me\r\n---\r\n# Note\r\n";
     const patched = patchFrontmatterContent(content, "status", "done", "replace", true);

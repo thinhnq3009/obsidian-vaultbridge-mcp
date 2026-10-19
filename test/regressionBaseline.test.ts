@@ -34,8 +34,8 @@ describe("OBS-001 metadata fixtures", () => {
     expect(syntax.tags).not.toContain("tilde");
   });
 
-  it("KNOWN K01: numeric issue references currently become tags", () => {
-    expect(parseMetadata(regressionNotes["Syntax.md"]).tags).toEqual(["123", "release/v1", "project/test"]);
+  it("K01: excludes numeric issue references while retaining valid tags", () => {
+    expect(parseMetadata(regressionNotes["Syntax.md"]).tags).toEqual(["release/v1", "project/test"]);
   });
 
   it("rejects invalid YAML metadata without changing bytes", async () => {

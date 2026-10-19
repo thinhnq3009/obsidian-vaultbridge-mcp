@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { createMcpServer } from "../src/server.js";
@@ -28,6 +28,7 @@ async function connect(readOnly = false) {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   try { await client?.close(); }
   finally { try { await server?.close(); } finally { await fixture?.close(); } }
 });
@@ -55,14 +56,27 @@ describe("OBS-001 actual MCP contracts", () => {
     expect(expectedTools).not.toContain("obsidian_apply_note_edits");
   });
 
-  it("KNOWN K02: MCP metadata drops backend headings, links and revision", async () => {
+  it("K02: MCP metadata exposes backend headings, links and revision", async () => {
     const result = await client.callTool({ name: "obsidian_read_note_metadata", arguments: { path: "Syntax.md" } });
     expect(result.isError).not.toBe(true);
-    expect(Object.keys(result.structuredContent ?? {}).sort()).toEqual(["frontmatter", "path", "stat", "tags"]);
+    expect(Object.keys(result.structuredContent ?? {}).sort()).toEqual(["frontmatter", "headings", "links", "path", "revision", "stat", "tags"]);
     const backend = await fixture.backend.readNoteMetadata("Syntax.md");
     expect(backend.headings).toEqual([{ text: "Real", level: 1 }]);
     expect(backend.links).toContain("Notes/Target");
     expect(backend.revision).toBe(revisionOf(regressionNotes["Syntax.md"]));
+    expect(result.structuredContent).toEqual(backend);
+    expect(result.structuredContent).not.toHaveProperty("content");
+  });
+
+  it.each([{}, { headings: [], links: [] }])("preserves backend optional fields %j without inventing revision or reading body", async (optional) => {
+    const metadata = { path: "Legacy.md", tags: ["project"], frontmatter: { status: "open" }, stat: null, ...optional };
+    const readMetadata = vi.spyOn(fixture.backend, "readNoteMetadata").mockResolvedValue({ ...metadata, content: "Body must not be returned." });
+    const readNote = vi.spyOn(fixture.backend, "readNote");
+    const result = await client.callTool({ name: "obsidian_read_note_metadata", arguments: { path: "Legacy.md" } });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toEqual(metadata);
+    expect(readMetadata).toHaveBeenCalledExactlyOnceWith("Legacy.md");
+    expect(readNote).not.toHaveBeenCalled();
   });
 
   it("returns MCP errors for invalid YAML and stale revisions and keeps bytes", async () => {

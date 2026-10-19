@@ -140,7 +140,8 @@ New paths use `mode: "create"` and do not need a revision.
 - Duplicate heading text requires the 1-based `occurrence` field.
 - Frontmatter is parsed as a YAML document; malformed YAML fails without writing.
 - BOM and the existing newline style are preserved.
-- Metadata includes frontmatter, headings, tags, standard links, Obsidian wikilinks, basic stat data, and revision.
+- `obsidian_read_note_metadata` returns frontmatter, tags and basic stat data without the note body. It also returns headings, link targets and the actual revision when provided by the backend; these fields remain optional for compatibility.
+- Filesystem metadata includes standard link URLs and Obsidian wikilink targets (without aliases or heading anchors). Inline code and code fences are excluded; numeric-only body references such as `#123` and `#6120` are not tags. Supported frontmatter tag forms are preserved.
 - `INDEX_MODE=auto` scans directly below 1,000 Markdown files and uses a persistent MiniSearch index at or above that threshold.
 - Watch mode incrementally updates search data after create, change, rename, or delete events. A damaged index degrades to scan mode and can be rebuilt with `obsidian_rebuild_search_index`.
 
