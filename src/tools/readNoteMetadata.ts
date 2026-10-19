@@ -29,7 +29,7 @@ export const registerReadNoteMetadataTool: ToolRegistrar = (server, client) => {
     "obsidian_read_note_metadata",
     {
       title: "Read Obsidian Note Metadata",
-      description: "Read note metadata, including frontmatter, tags, and stat fields, without returning the full body.",
+      description: "Read note metadata, including frontmatter, tags, stat fields, and backend-supported headings, links, and revision, without returning the full body.",
       inputSchema,
       outputSchema,
     },
@@ -41,6 +41,9 @@ export const registerReadNoteMetadataTool: ToolRegistrar = (server, client) => {
           tags: metadata.tags,
           frontmatter: metadata.frontmatter,
           stat: metadata.stat,
+          ...(metadata.headings !== undefined ? { headings: metadata.headings } : {}),
+          ...(metadata.links !== undefined ? { links: metadata.links } : {}),
+          ...(metadata.revision !== undefined ? { revision: metadata.revision } : {}),
         });
       } catch (error) {
         return errorResult(error);

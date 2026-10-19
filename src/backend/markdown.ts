@@ -42,7 +42,7 @@ export function parseMetadata(content: string) {
         if (match[1]) links.add(match[1].trim());
       }
       for (const match of node.value.matchAll(/(^|\s)#([\p{L}\p{N}_/-]+)/gu)) {
-        if (match[2]) tags.add(match[2]);
+        if (match[2] && !/^\p{N}+$/u.test(match[2])) tags.add(match[2]);
       }
     }
   });
