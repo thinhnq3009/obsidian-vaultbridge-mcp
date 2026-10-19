@@ -14,6 +14,13 @@ afterEach(async () => {
 });
 
 describe("loadConfig", () => {
+  it("defaults automatic agent timestamps on and accepts environment/CLI rollback", () => {
+    expect(loadConfig({ VAULT_PATH: "." }, []).autoAgentEditAt).toBe(true);
+    expect(loadConfig({ VAULT_PATH: ".", AUTO_AGENT_EDIT_AT: "false" }, []).autoAgentEditAt).toBe(false);
+    expect(loadConfig({ VAULT_PATH: "." }, ["--auto-agent-edit-at=false"]).autoAgentEditAt).toBe(false);
+    expect(() => loadConfig({ VAULT_PATH: ".", AUTO_AGENT_EDIT_AT: "invalid" }, [])).toThrow(/Invalid configuration/);
+  });
+
   it("uses standalone filesystem defaults", () => {
     const config = loadConfig({ VAULT_PATH: "." }, []);
     expect(config.backend).toBe("filesystem");

@@ -8,6 +8,7 @@ import lockfile from "proper-lockfile";
 
 import type { AppConfig, NoteJsonMetadata, NoteReadResult, PatchOperation, VaultEntry } from "../types.js";
 import { normalizeVaultPathInput, VaultError } from "../types.js";
+import { agentEditField, prepareAgentEdit } from "./agentEditTimestamp.js";
 import { parseMetadata, patchFrontmatterContent, patchHeadingContent } from "./markdown.js";
 import { VaultSearchService } from "./search.js";
 import type { BackendCapabilities, BackendStatus, PathStat, SearchQuery, SearchResponse, VaultBackend, WriteOptions } from "./types.js";
@@ -137,8 +138,9 @@ export class FilesystemVaultBackend implements VaultBackend {
         if (!existing) throw new VaultError(`Path does not exist: ${resolved.relative}`, { code: "NOT_FOUND" });
         requireRevision(options.expectedRevision, existing.revision);
       }
-      await atomicWrite(resolved.absolute, content, existing?.mode);
-      return { path: resolved.relative, message: existing ? "File replaced successfully." : "File created successfully.", revision: revisionForContent(content) };
+      const next = this.prepareWrite(resolved.relative, content, existing?.content);
+      if (!existing || next !== existing.content) await atomicWrite(resolved.absolute, next, existing?.mode);
+      return { path: resolved.relative, message: existing ? "File replaced successfully." : "File created successfully.", revision: revisionForContent(next) };
     });
   }
 
@@ -207,7 +209,10 @@ export class FilesystemVaultBackend implements VaultBackend {
   }
 
   public async patchFrontmatter(input: string, field: string, value: unknown, operation: PatchOperation, createIfMissing: boolean, expectedRevision?: string) {
-    const result = await this.updateTextFile(input, expectedRevision, (current) => patchFrontmatterContent(current, field, value, operation, createIfMissing), "Frontmatter patched successfully.");
+    const result = await this.updateTextFile(input, expectedRevision, (current) => {
+      if (field.split(".")[0] === agentEditField) throw new VaultError(`${agentEditField} is server-managed.`, { code: "ACCESS_DENIED" });
+      return patchFrontmatterContent(current, field, value, operation, createIfMissing);
+    }, "Frontmatter patched successfully.");
     return { ...result, field, operation };
   }
 
@@ -225,10 +230,18 @@ export class FilesystemVaultBackend implements VaultBackend {
       const existing = await readExisting(resolved.absolute, this.config.maxFileSizeBytes);
       if (!existing) throw new VaultError(`Path does not exist: ${resolved.relative}`, { code: "NOT_FOUND" });
       requireRevision(expectedRevision, existing.revision);
-      const next = transform(existing.content);
-      await atomicWrite(resolved.absolute, next, existing.mode);
+      const next = this.prepareWrite(resolved.relative, transform(existing.content), existing.content);
+      if (next !== existing.content) await atomicWrite(resolved.absolute, next, existing.mode);
       return { path: resolved.relative, message, revision: revisionForContent(next) };
     });
+  }
+
+  private prepareWrite(relative: string, content: string, previous?: string): string {
+    const next = relative.toLowerCase().endsWith(".md")
+      ? prepareAgentEdit(content, previous, this.config.autoAgentEditAt ?? true)
+      : content;
+    if (Buffer.byteLength(next, "utf8") > this.config.maxFileSizeBytes) throw new VaultError("Content exceeds configured file size limit.", { code: "FILE_TOO_LARGE" });
+    return next;
   }
 
   private async resolve(input: string, access: "read" | "write", mustExist: boolean): Promise<{ relative: string; absolute: string }> {
@@ -281,14 +294,14 @@ function requireRevision(expected: string | undefined, actual: string): void {
 async function atomicWrite(destination: string, content: string, mode?: number): Promise<void> {
   await fs.mkdir(path.dirname(destination), { recursive: true });
   const temporary = path.join(path.dirname(destination), `.obsidian-vault-mcp-${randomUUID()}.tmp`);
-  const handle = await fs.open(temporary, "wx", mode ?? 0o600);
   try {
-    await handle.writeFile(content, "utf8");
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-  try {
+    const handle = await fs.open(temporary, "wx", mode ?? 0o600);
+    try {
+      await handle.writeFile(content, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
     await fs.rename(temporary, destination);
   } catch (error) {
     await fs.unlink(temporary).catch(() => undefined);

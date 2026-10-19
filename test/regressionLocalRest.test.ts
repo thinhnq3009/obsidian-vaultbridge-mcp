@@ -25,6 +25,17 @@ describe("OBS-001 Local REST adapter boundary", () => {
     // In particular, neither revision nor occurrence is forwarded.
   });
 
+  it("does not emulate automatic timestamps over Local REST HTTP forwarding", async () => {
+    const write = vi.spyOn(RestClient.prototype, "writeNote").mockResolvedValue({ path: "Note.md", message: "forwarded" });
+    const read = vi.spyOn(RestClient.prototype, "readNote");
+    const patch = vi.spyOn(RestClient.prototype, "patchFrontmatter");
+    const backend = new LocalRestBackend({ ...config, autoAgentEditAt: true });
+    await backend.writeNote("Note.md", "body");
+    expect(write).toHaveBeenCalledExactlyOnceWith("Note.md", "body");
+    expect(read).not.toHaveBeenCalled();
+    expect(patch).not.toHaveBeenCalled();
+  });
+
   it("KNOWN K06: status reports writable even when configured read-only", async () => {
     const backend = new LocalRestBackend(config);
     expect((await backend.status()).readOnly).toBe(false);
