@@ -145,6 +145,7 @@ describe("OBS-001 read-only at every content mutation registration", () => {
     ["write_note", { ...note, content: "bad", mode: "replace" }],
     ["write_notes_bulk", { files: [{ path: "New.md", content: "bad" }, { ...note, content: "bad", mode: "replace" }] }],
     ["append_to_note", { ...note, content: "bad" }],
+    ["apply_note_edits", { ...note, frontmatter_updates: [{ field: "status", value: "bad" }] }],
     ["patch_heading", { ...note, heading: "Kế hoạch 🚀", content: "bad" }],
     ["patch_frontmatter", { ...note, field: "status", value: "bad" }],
     ["create_canvas", { path: "New.canvas" }],
