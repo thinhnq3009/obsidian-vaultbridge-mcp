@@ -184,11 +184,22 @@ describe("OBS-003 agent edit transaction", () => {
     ["counter: 0o400000000000000000", "counter: 0o400000000000000001"],
     ["counter: 99999999999999999999999999999999999998", "counter: 99999999999999999999999999999999999999"],
     ["counter: 9007199254740993", 'counter: "9007199254740993"'],
+    ["counter: 9007199254740992.0", "counter: 9007199254740993.0"],
+    ["counter: 9007199254740993.0", "counter: 9007199254740992.0"],
+    ["counter: 9007199254740993.1", "counter: 9007199254740993.2"],
+    ["counter: 1e999999", "counter: 2e999999"],
+    ["counter: 1e-999999", "counter: 2e-999999"],
+    ["counter: -0.0", "counter: 0.0"],
+    ['nested: {1: shadowed, "1": retained}', 'nested: {1: changed, "1": retained}'],
+    ["nested: {9007199254740992.0: old, 9007199254740993.0: keep}", "nested: {9007199254740992.0: changed, 9007199254740993.0: keep}"],
+    ["nested:\n  ? [a, b]\n  : old\n  ? [a, c]\n  : keep", "nested:\n  ? [a, b]\n  : changed\n  ? [a, c]\n  : keep"],
   ])("detects scalar changes losslessly: %s → %s", async (before, after) => {
     const content = `---\n${before}\n---\nbody\n`;
     const revision = await seed(content);
     const result = await fixture.backend.writeNote("Note.md", content.replace(before, after), { mode: "replace", expectedRevision: revision });
-    expect(await assertPersisted("Note.md", result.revision)).toContain(`${after}\n`);
+    const persisted = (await fixture.bytes("Note.md")).toString();
+    expect(persisted).toBe(`---\n${after}\nagents_edit_at: "${first}"\n---\nbody\n`);
+    expect(result.revision).toBe(revisionOf(persisted));
     expect(result.revision).not.toBe(revision);
   });
 
@@ -199,6 +210,12 @@ describe("OBS-003 agent edit transaction", () => {
     ["nested: {values: [1, 1.25, true, null, 'text']}", 'nested: {values: [1.0, 1.250, TRUE, ~, "text"]}'],
     ["a: &value 9007199254740993\nb: *value", "b: &value 0x20000000000001\na: *value"],
     ["nested: &self {value: 1, self: *self}", "nested: &self {value: 1.0, self: *self}"],
+    ["counter: 9007199254740993.1250", "counter: 90071992547409931250e-4"],
+    ["counter: 1e999999", "counter: 10e999998"],
+    ["counter: 1e-999999", "counter: 0.1e-999998"],
+    ["counter: -0.0", "counter: -0e999999"],
+    ["nested: {1: one, 2: two}", "nested: {2.0: two, 1e0: one}"],
+    ["nested:\n  ? [1, 2]\n  : keep", "nested:\n  ? [1.0, 2e0]\n  : keep"],
   ])("preserves semantic no-ops across numeric spellings and other types: %s", async (before, after) => {
     const content = `---\n${before}\n---\nbody\n`;
     const revision = await seed(content);
@@ -206,6 +223,46 @@ describe("OBS-003 agent edit transaction", () => {
     const result = await fixture.backend.writeNote("Note.md", content.replace(before, after), { mode: "replace", expectedRevision: revision });
     expect(result.revision).toBe(revision);
     expect(await fixture.bytes("Note.md")).toEqual(Buffer.from(content));
+    expect(rename).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["9007199254740993", "9007199254740993.0"],
+    ["9007199254740993.0", "9007199254740993"],
+    ["9007199254740993", "9.007199254740993e15"],
+    ["-9007199254740993.0", "-9007199254740993"],
+  ])("#9 preserves exact large numeric no-ops: %s → %s", async (before, after) => {
+    const original = `\uFEFF---\r\nnested: &value {counter: ${before}} # keep\r\ncopy: *value\r\nagents_edit_at: "${first}"\r\n---\r\nbody\r\n`;
+    const revision = await seed(original);
+    const stat = await fs.stat(path.join(fixture.vault, "Note.md"));
+    clock = second;
+    const rename = vi.spyOn(fs, "rename");
+    const result = await fixture.backend.writeNote("Note.md", original.replace(before, after).replace("# keep", "# formatting"), { mode: "replace", expectedRevision: revision });
+    expect(result.revision).toBe(revision);
+    expect(await fixture.bytes("Note.md")).toEqual(Buffer.from(original));
+    expect((await fs.stat(path.join(fixture.vault, "Note.md"))).mtimeMs).toBe(stat.mtimeMs);
+    expect(rename).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "nested: {1: shadowed, 1.0: retained}",
+    "nested: [{0x1: shadowed, 1e0: retained}]",
+    "nested: &keys {1: shadowed, 1.0: retained}\ncopy: *keys",
+    "key: &key 1\nnested: {*key : shadowed, 1.0: retained}",
+    "nested: {9007199254740993: shadowed, 9007199254740993.0: retained}",
+    "nested:\n  ? [1, 2]\n  : shadowed\n  ? [1.0, 2e0]\n  : retained",
+  ])("#8 rejects normalized key collisions before writing: %s", async (yaml) => {
+    const original = `\uFEFF---\r\n${yaml.replaceAll("\n", "\r\n")}\r\nagents_edit_at: "${first}"\r\n---\r\nbody\r\n`;
+    const revision = await seed(original);
+    const stat = await fs.stat(path.join(fixture.vault, "Note.md"));
+    clock = second;
+    const rename = vi.spyOn(fs, "rename");
+    const error = { code: "INVALID_MARKDOWN", message: "Frontmatter mapping keys must be unique after numeric normalization." };
+    await expect(fixture.backend.writeNote("Note.md", original.replace("shadowed", "changed"), { mode: "replace", expectedRevision: revision })).rejects.toMatchObject(error);
+    await expect(fixture.backend.writeNote("New.md", original)).rejects.toMatchObject(error);
+    expect(await fixture.bytes("Note.md")).toEqual(Buffer.from(original));
+    expect((await fs.stat(path.join(fixture.vault, "Note.md"))).mtimeMs).toBe(stat.mtimeMs);
+    expect(await fs.readdir(fixture.vault)).not.toContain("New.md");
     expect(rename).not.toHaveBeenCalled();
   });
 
