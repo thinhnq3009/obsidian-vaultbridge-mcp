@@ -1,7 +1,7 @@
 import type { AppConfig, PatchOperation } from "../types.js";
 import { VaultError } from "../types.js";
 import { LocalRestBackend as Client } from "../obsidian/client.js";
-import type { BackendCapabilities, BackendStatus, NoteEdits, NoteEditsResult, SearchQuery, VaultBackend, WriteOptions } from "./types.js";
+import type { BackendCapabilities, BackendStatus, NoteEditsResult, SearchQuery, VaultBackend, WriteOptions } from "./types.js";
 
 export class LocalRestBackend implements VaultBackend {
   public readonly capabilities: BackendCapabilities = { activeFile: true, openFile: true, searchIndex: false, filesystem: false };
@@ -64,7 +64,7 @@ export class LocalRestBackend implements VaultBackend {
     return { sourcePath, destinationPath, kind: "file" as const, movedFiles: 1 };
   }
   public readNoteMetadata(path: string) { return this.client.readNoteMetadata(path); }
-  public applyNoteEdits(_path: string, _expectedRevision: string, _edits: NoteEdits): Promise<NoteEditsResult> {
+  public applyNoteEdits(): Promise<NoteEditsResult> {
     return Promise.reject(new VaultError("Atomic multi-edit is unsupported on the Local REST backend.", { code: "UNSUPPORTED_CAPABILITY" }));
   }
   public async patchHeading(path: string, heading: string, content: string, operation: PatchOperation) {
