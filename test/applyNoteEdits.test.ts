@@ -220,7 +220,7 @@ describe("OBS-005 atomic multi-edit", () => {
   });
 
   it("explicitly rejects Local REST with no read/write requests", async () => {
-    const legacy = new LocalRestBackend({ ...fixture.config, backend: "local-rest" });
+    const legacy = new LocalRestBackend({ ...fixture.config, backend: "local-rest", obsidianApiKey: "test-only", obsidianBaseUrl: "http://127.0.0.1:27123" });
     await expect(legacy.applyNoteEdits("Comments.md", "rev", { ...empty, sections: [section("X", "bad")] }))
       .rejects.toMatchObject({ code: "UNSUPPORTED_CAPABILITY" });
   });
