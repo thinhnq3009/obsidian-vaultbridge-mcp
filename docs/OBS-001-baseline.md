@@ -58,6 +58,16 @@ Existing STDIO startup, HTTP authentication, canvas validation and watcher index
 
 Both converted regressions failed twice before the production fix. Afterward, the focused metadata/MCP run passed 78 tests; `npm test` passed all 156 tests across 13 files; lint, build and `git diff --check` passed. Tests used isolated temporary vaults. These results supersede only the K01/K02 failure status; K03–K06 and the release-provenance gap remain open.
 
+## OBS-003 persistence boundary update
+
+OBS-003's required final UTF-8 size check, including timestamp overhead, also
+addresses the historical K05 oversized transformed-write case. Append, heading
+and frontmatter writes now reject oversized content and preserve exact original
+bytes, including when stamping is disabled. The K05 characterization was changed
+to assert desired safety; see [the write audit](OBS-003-write-audit.md).
+Current outstanding defect characterizations are K03, K04 and K06. OBS-002 results
+and the original OBS-001 observations above remain historical evidence.
+
 ## Known failures retained for follow-up
 
 Tests labelled **KNOWN Kxx** assert the exact observed defective behavior. They are characterization tests, not skipped tests or successful safety assertions. When a behavior is fixed in a separately authorized task, change its assertion to the desired invariant. A green baseline suite must never be interpreted as a release/safety gate passing.
@@ -68,7 +78,6 @@ All source links below pin the tested base SHA; local test names identify reprod
 | --- | --- | --- |
 | K03 | Search should enforce readPaths; a denied direct read of Comments.md is still returned with its body snippet by search. **Confirmed read-scope breach in temporary vault.** | `filesystem safety > KNOWN K03`; [unfiltered delegation](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/blob/1edecc07dfd2e45d1a2ac685faff6f8534f1b3e0/src/backend/filesystem.ts#L214) |
 | K04 | Immediate search should see a successful write; scan + watch off with a nonempty initial vault misses Created.md until explicit rebuild. | `filesystem safety > KNOWN K04`; [cached documents](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/blob/1edecc07dfd2e45d1a2ac685faff6f8534f1b3e0/src/backend/search.ts#L83) |
-| K05 | Every mutation should enforce final UTF-8 byte limit; append, heading and frontmatter edits write oversized files that then cannot be read by the same backend. Create/replace correctly reject oversized input. | `filesystem safety > KNOWN K05`; [unchecked transformed content](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/blob/1edecc07dfd2e45d1a2ac685faff6f8534f1b3e0/src/backend/filesystem.ts#L228) |
 | K06 | Local REST should enforce safety options or explicitly reject unsupported contracts. Four note mutations forward calls despite readOnly=true, disallowed path and stale revision, dropping revision (also heading occurrence and write mode). Status reports readOnly=false. This is an adapter-boundary finding with mocks, not a live REST integration result. | `Local REST adapter boundary > KNOWN K06` (5 tests); [adapter methods](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/blob/1edecc07dfd2e45d1a2ac685faff6f8534f1b3e0/src/backend/localRest.ts#L41), [status](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/blob/1edecc07dfd2e45d1a2ac685faff6f8534f1b3e0/src/backend/localRest.ts#L16) |
 
 OBS-001 itself made no production fixes; the subsequent OBS-002 fixes are recorded above. K03/K06 still require owner review before treating scope/read-only safety as established. Neither the baseline nor this follow-up makes a release decision.

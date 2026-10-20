@@ -11,6 +11,7 @@ export type AppConfig = {
   backend: BackendKind;
   vaultPath?: string;
   readOnly: boolean;
+  autoAgentEditAt?: boolean;
   readPaths: string[];
   writePaths: string[];
   indexMode: IndexMode;

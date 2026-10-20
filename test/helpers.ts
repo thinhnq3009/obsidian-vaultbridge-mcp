@@ -9,6 +9,9 @@ export function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     backend: "filesystem",
     vaultPath: process.cwd(),
     readOnly: false,
+    // Historical byte-exact suites deliberately exercise the disabled baseline.
+    // OBS-003 tests opt in; config.test.ts verifies the production default.
+    autoAgentEditAt: false,
     readPaths: [],
     writePaths: [],
     indexMode: "scan",

@@ -19,6 +19,7 @@ const envSchema = z.object({
   BACKEND: z.preprocess((value) => value ?? "filesystem", z.enum(["filesystem", "local-rest"])),
   VAULT_PATH: z.string().trim().optional(),
   READ_ONLY: booleanString(false),
+  AUTO_AGENT_EDIT_AT: booleanString(true),
   READ_PATHS: z.string().optional(),
   WRITE_PATHS: z.string().optional(),
   INDEX_MODE: z.preprocess((value) => value ?? "auto", z.enum(["auto", "scan", "indexed"])),
@@ -62,6 +63,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env, argv: string
     backend: data.BACKEND,
     ...(vaultPath ? { vaultPath: path.resolve(vaultPath) } : {}),
     readOnly: data.READ_ONLY,
+    autoAgentEditAt: data.AUTO_AGENT_EDIT_AT,
     readPaths: splitList(data.READ_PATHS),
     writePaths: splitList(data.WRITE_PATHS),
     indexMode: data.INDEX_MODE,
@@ -147,6 +149,7 @@ export function parseCliArgs(argv: string[]): CliOverrides {
   const overrides: CliOverrides = {};
   const mapping: Record<string, string> = {
     backend: "BACKEND", vault: "VAULT_PATH", "read-only": "READ_ONLY", "read-path": "READ_PATHS", "write-path": "WRITE_PATHS",
+    "auto-agent-edit-at": "AUTO_AGENT_EDIT_AT",
     "index-mode": "INDEX_MODE", "watch-mode": "WATCH_MODE", "cache-dir": "CACHE_DIR", transport: "MCP_TRANSPORT", host: "MCP_HTTP_HOST",
     port: "MCP_HTTP_PORT", path: "MCP_HTTP_PATH", "auth-token": "MCP_AUTH_TOKEN", "api-key": "OBSIDIAN_API_KEY", "base-url": "OBSIDIAN_BASE_URL", "verify-ssl": "OBSIDIAN_VERIFY_SSL",
   };

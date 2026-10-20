@@ -100,7 +100,7 @@ describe("OBS-001 filesystem safety", () => {
     } finally { await limited.close(); }
   });
 
-  it("KNOWN K05: append/heading/frontmatter can exceed the configured write size", async () => {
+  it("rejects oversized append/heading/frontmatter at the final persistence boundary", async () => {
     const content = "---\na: b\n---\n# H\nx\n";
     const limited = new FilesystemVaultBackend({ ...fixture.config, maxFileSizeBytes: Buffer.byteLength(content) });
     await limited.initialize();
@@ -113,9 +113,9 @@ describe("OBS-001 filesystem safety", () => {
       for (const [index, mutate] of operations.entries()) {
         const name = `Limit-${index}.md`;
         await limited.writeNote(name, content);
-        await mutate(name);
-        expect((await fixture.bytes(name)).length).toBeGreaterThan(Buffer.byteLength(content));
-        await expect(limited.readNote(name)).rejects.toMatchObject({ code: "FILE_TOO_LARGE" });
+        await expect(mutate(name)).rejects.toMatchObject({ code: "FILE_TOO_LARGE" });
+        expect(await fixture.bytes(name)).toEqual(Buffer.from(content));
+        expect((await limited.readNote(name)).revision).toBe(revisionOf(content));
       }
     } finally { await limited.close(); }
   });

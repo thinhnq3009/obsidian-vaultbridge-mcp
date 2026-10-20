@@ -134,6 +134,38 @@ Then replace using the returned revision:
 
 New paths use `mode: "create"` and do not need a revision.
 
+## Automatic agent edit timestamp
+
+Filesystem Markdown mutations automatically set the reserved frontmatter field
+`agents_edit_at` to the server's ISO 8601 UTC time. This includes create, replace,
+append, heading/frontmatter patch, bulk writes and direct `.md` writes (extension
+matching is case-insensitive). The stamp is added inside the existing file lock,
+after revision/transform validation, before the single atomic write. Returned
+revisions hash the final persisted UTF-8 bytes. Final size limits include the stamp.
+
+`AUTO_AGENT_EDIT_AT=false` (or `--auto-agent-edit-at=false`, or the programmatic
+`autoAgentEditAt` config) disables automatic updates. Existing timestamp values
+are preserved even if a replacement omits or changes them. Clients cannot patch
+`agents_edit_at` or its children; supplied scalar timestamps on enabled writes
+are overwritten by server time. Disabled creates cannot supply the reserved field.
+
+An unchanged Markdown body and YAML properties (ignoring `agents_edit_at`) is a
+no-op: no write, mtime change or timestamp update. YAML formatting/comment-only
+replacement is also a no-op under this comparison. Stale revisions are still
+rejected before no-op detection. Timestamp insertion preserves unrelated YAML
+text/comments, BOM, newline style and body; it does not reserialize the document.
+The existing frontmatter-patch serializer retains its existing formatting behavior.
+Malformed/unclosed YAML, non-mapping frontmatter and anchors, tags, collections or
+block scalars on the reserved field are rejected without writing. Repair such
+frontmatter outside MCP first. Canvas/assets and move/delete operations do not
+receive timestamps. Bulk writes retain sequential partial success; they are not
+cross-file transactions. See [the write-path audit](docs/OBS-003-write-audit.md).
+
+The deprecated Local REST adapter does **not** implement this feature: its HTTP
+forwarding has no shared locked transaction or reliable revision precondition.
+`AUTO_AGENT_EDIT_AT` has no effect there; the server does not perform an unsafe
+read/patch/write workaround or claim filesystem atomicity for this adapter.
+
 ## Markdown and search behavior
 
 - Headings are located through a Markdown AST and only the selected section is spliced into the original file.
