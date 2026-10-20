@@ -35,7 +35,7 @@ afterEach(async () => {
 
 const expectedTools = [
   "list_files", "read_note", "read_note_metadata", "read_canvas", "write_note", "write_notes_bulk",
-  "create_canvas", "update_canvas", "delete_canvas", "append_to_note", "patch_heading", "patch_frontmatter",
+  "create_canvas", "update_canvas", "delete_canvas", "append_to_note", "apply_note_edits", "patch_heading", "patch_frontmatter",
   "search", "search_content_advanced", "add_canvas_node", "update_canvas_node", "remove_canvas_node",
   "add_canvas_edge", "update_canvas_edge", "remove_canvas_edge", "move_path", "rename_path", "delete_path",
   "stat_path", "tree", "create_folder", "backend_status", "vault_health", "rebuild_search_index", "get_active_file", "open_file",
@@ -44,7 +44,7 @@ const expectedTools = [
 describe("OBS-001 actual MCP contracts", () => {
   beforeEach(async () => { await connect(); });
 
-  it("advertises exactly the current 31 tools and their JSON schemas", async () => {
+  it("advertises exactly the current 32 tools and their JSON schemas", async () => {
     const list = await client.listTools();
     expect(list.tools.map((tool) => tool.name).sort()).toEqual(expectedTools);
     expect(list.nextCursor).toBeUndefined();
@@ -53,7 +53,7 @@ describe("OBS-001 actual MCP contracts", () => {
       expect(tool.outputSchema?.type).toBe("object");
     }
     expect(expectedTools).not.toContain("obsidian_read_note_section");
-    expect(expectedTools).not.toContain("obsidian_apply_note_edits");
+    expect(expectedTools).toContain("obsidian_apply_note_edits");
   });
 
   it("K02: MCP metadata exposes backend headings, links and revision", async () => {
