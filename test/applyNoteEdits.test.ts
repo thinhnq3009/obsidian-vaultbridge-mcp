@@ -57,7 +57,7 @@ describe("OBS-005 atomic multi-edit", () => {
     expect(output).toContain("# Ghi chú 🚀");
     expect(output).toContain("Tail changed");
     expect(output).toContain("Mới 🚀");
-    expect(output).toContain("## Tail\r\nUntouched");
+    expect(output).toContain("## Tail\r\nTail changed");
     expect(output.startsWith("\uFEFF---\r\n")).toBe(true);
     expect(output.replace(/\r\n/gu, "")).not.toContain("\n");
     expect(output.match(/agents_edit_at:/gu)?.length).toBe(1);
