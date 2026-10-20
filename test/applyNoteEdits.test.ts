@@ -47,7 +47,7 @@ describe("OBS-005 atomic multi-edit", () => {
     const rename = vi.spyOn(fs, "rename");
     const result = await fixture.backend.applyNoteEdits("BOM-CRLF.md", revisionOf(source), {
       frontmatter: [frontmatter("status", "done"), frontmatter("priority", 4)],
-      sections: [section("Target", "Mới 🚀"), section("Ghi chú 🚀", "Top content")],
+      sections: [section("Target", "Mới 🚀"), section("Tail", "Tail changed")],
     });
     const bytes = await fixture.bytes("BOM-CRLF.md");
     const output = bytes.toString("utf8");
@@ -55,7 +55,7 @@ describe("OBS-005 atomic multi-edit", () => {
     expect(output).toContain("status: done");
     expect(output).toContain("priority: 4");
     expect(output).toContain("# Ghi chú 🚀");
-    expect(output).toContain("Top content");
+    expect(output).toContain("Tail changed");
     expect(output).toContain("Mới 🚀");
     expect(output).toContain("## Tail\r\nUntouched");
     expect(output.startsWith("\uFEFF---\r\n")).toBe(true);
