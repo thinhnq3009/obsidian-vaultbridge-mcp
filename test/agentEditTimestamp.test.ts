@@ -149,6 +149,66 @@ describe("OBS-003 agent edit transaction", () => {
     expect((await fs.stat(path.join(fixture.vault, "Note.md"))).mtimeMs).toBe(stat.mtimeMs);
   });
 
+  it.each([
+    ["9007199254740992", "9007199254740993"],
+    ["9007199254740993", "9007199254740992"],
+  ])("persists an unsafe integer replacement from %s to %s atomically", async (before, after) => {
+    const content = `---\ncounter: ${before}\n---\nbody\n`;
+    const created = await fixture.backend.writeNote("Note.md", content);
+    clock = second;
+    const rename = vi.spyOn(fs, "rename");
+    const result = await fixture.backend.writeNote("Note.md", content.replace(before, after), { mode: "replace", expectedRevision: created.revision });
+    expect(await assertPersisted("Note.md", result.revision, second)).toBe(`---\ncounter: ${after}\nagents_edit_at: "${second}"\n---\nbody\n`);
+    expect(result.revision).not.toBe(created.revision);
+    expect(rename).toHaveBeenCalledOnce();
+  });
+
+  it.each(["9007199254740992", "9007199254740993"])("preserves bytes, revision and mtime for an unchanged unsafe integer %s", async (value) => {
+    const original = `\uFEFF---\r\ncounter: ${value} # keep\r\nagents_edit_at: "${first}"\r\n---\r\nbody\r\n`;
+    const revision = await seed(original);
+    const stat = await fs.stat(path.join(fixture.vault, "Note.md"));
+    clock = second;
+    const rename = vi.spyOn(fs, "rename");
+    const replacement = original.replace(" # keep", " # changed comment").replace(first, second);
+    const result = await fixture.backend.writeNote("Note.md", replacement, { mode: "replace", expectedRevision: revision });
+    expect(result.revision).toBe(revision);
+    expect(await fixture.bytes("Note.md")).toEqual(Buffer.from(original));
+    expect((await fs.stat(path.join(fixture.vault, "Note.md"))).mtimeMs).toBe(stat.mtimeMs);
+    expect(rename).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["nested: {values: [9007199254740992]}", "nested: {values: [9007199254740993]}"],
+    ["counter: -9007199254740992", "counter: -9007199254740993"],
+    ["counter: 0x20000000000000", "counter: 0x20000000000001"],
+    ["counter: 0o400000000000000000", "counter: 0o400000000000000001"],
+    ["counter: 99999999999999999999999999999999999998", "counter: 99999999999999999999999999999999999999"],
+    ["counter: 9007199254740993", 'counter: "9007199254740993"'],
+  ])("detects scalar changes losslessly: %s → %s", async (before, after) => {
+    const content = `---\n${before}\n---\nbody\n`;
+    const revision = await seed(content);
+    const result = await fixture.backend.writeNote("Note.md", content.replace(before, after), { mode: "replace", expectedRevision: revision });
+    expect(await assertPersisted("Note.md", result.revision)).toContain(`${after}\n`);
+    expect(result.revision).not.toBe(revision);
+  });
+
+  it.each([
+    ["counter: 9007199254740993", "counter: 0x20000000000001"],
+    ["counter: 9007199254740993", "counter: 0o400000000000000001"],
+    ["counter: 9007199254740992", "counter: 9007199254740992.0"],
+    ["nested: {values: [1, 1.25, true, null, 'text']}", 'nested: {values: [1.0, 1.250, TRUE, ~, "text"]}'],
+    ["a: &value 9007199254740993\nb: *value", "b: &value 0x20000000000001\na: *value"],
+    ["nested: &self {value: 1, self: *self}", "nested: &self {value: 1.0, self: *self}"],
+  ])("preserves semantic no-ops across numeric spellings and other types: %s", async (before, after) => {
+    const content = `---\n${before}\n---\nbody\n`;
+    const revision = await seed(content);
+    const rename = vi.spyOn(fs, "rename");
+    const result = await fixture.backend.writeNote("Note.md", content.replace(before, after), { mode: "replace", expectedRevision: revision });
+    expect(result.revision).toBe(revision);
+    expect(await fixture.bytes("Note.md")).toEqual(Buffer.from(content));
+    expect(rename).not.toHaveBeenCalled();
+  });
+
   it("does not introduce frontmatter on a first no-op", async () => {
     const revision = await seed("# H\nbody\n");
     const rename = vi.spyOn(fs, "rename");

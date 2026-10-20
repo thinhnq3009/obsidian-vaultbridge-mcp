@@ -18,7 +18,11 @@ Both content-write funnels validate the final UTF-8 size immediately before the
 single `atomicWrite`. Final persisted bytes supply the revision hash. Replacement
 and transformed writes still require current revision before no-op detection.
 No-op compares exact body and BOM plus parsed YAML properties after excluding the
-reserved field. Formatting/comment-only replacements are no-ops. Missing frontmatter
+reserved field. Integers are parsed as `bigint`, preserving precision beyond
+`Number.MAX_SAFE_INTEGER`, including nested values and aliases. Integral floats
+are normalized to `bigint` in the YAML AST before resolving aliases, preserving
+numeric no-ops such as `1` versus `1.0` without rounding integers. Negative-zero
+floats retain their sign. Formatting/comment-only replacements are no-ops. Missing frontmatter
 and an empty mapping are equivalent. No-op keeps the original bytes, mtime and
 revision, including notes that have never had a timestamp.
 

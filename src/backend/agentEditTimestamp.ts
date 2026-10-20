@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 
-import { isMap, isScalar, parseDocument } from "yaml";
+import { isMap, isScalar, parseDocument, visit } from "yaml";
 
 import { VaultError } from "../types.js";
 
@@ -30,7 +30,7 @@ function frontmatter(content: string) {
   const block = match?.index === 0 ? match : null;
   if (!block && /^---[ \t]*(?:\r?\n|$)/u.test(source)) invalid("Unclosed YAML frontmatter.");
   const yaml = block?.[2] ?? "";
-  const document = parseDocument(yaml, { keepSourceTokens: true });
+  const document = parseDocument(yaml, { keepSourceTokens: true, intAsBigInt: true });
   if (document.errors.length || (document.contents !== null && !isMap(document.contents))) invalid("Frontmatter must be a valid YAML mapping.");
   const mapping = isMap(document.contents) ? document.contents : undefined;
   if (mapping?.items.some((pair) => !isScalar(pair.key) || typeof pair.key.value !== "string")) invalid("Frontmatter keys must be strings.");
@@ -41,6 +41,15 @@ function frontmatter(content: string) {
   if (managed && (!isScalar(value) || value.anchor || value.tag || value.type === "BLOCK_LITERAL" || value.type === "BLOCK_FOLDED" || !value.range)) invalid(`${agentEditField} must be an untagged scalar without an anchor.`);
   const range = isScalar(value) ? value.range : undefined;
   const rawManaged = range ? yaml.slice(range[0], range[1]) : undefined;
+  // Keep integers exact, including inside collections and aliases. Normalize
+  // integral floats too so equivalent numeric spellings (1, 1.0, 1e0) remain
+  // no-ops without converting a potentially unsafe bigint back to a number.
+  // Visit the AST before resolving aliases, which may contain cycles.
+  visit(document, {
+    Scalar(_key, node) {
+      if (typeof node.value === "number" && Number.isInteger(node.value) && !Object.is(node.value, -0)) node.value = BigInt(node.value);
+    },
+  });
   const properties: unknown = document.toJS();
   if (properties && typeof properties === "object") Reflect.deleteProperty(properties, agentEditField);
   return {
