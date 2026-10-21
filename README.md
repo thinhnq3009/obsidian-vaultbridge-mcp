@@ -105,7 +105,7 @@ When Obsidian has exactly one open vault recorded locally, the `--vault` argumen
 
 Core tools retain their existing names:
 
-- Notes: `obsidian_read_note`, `obsidian_write_note`, `obsidian_append_to_note`, `obsidian_patch_heading`, `obsidian_read_note_metadata`, `obsidian_patch_frontmatter`
+- Notes: `obsidian_read_note`, `obsidian_read_note_section`, `obsidian_write_note`, `obsidian_append_to_note`, `obsidian_patch_heading`, `obsidian_read_note_metadata`, `obsidian_patch_frontmatter`
 - Filesystem: `obsidian_list_files`, `obsidian_create_folder`, `obsidian_tree`, `obsidian_stat_path`, `obsidian_move_path`, `obsidian_rename_path`, `obsidian_delete_path`
 - Search: `obsidian_search`, `obsidian_search_content_advanced`, `obsidian_rebuild_search_index`
 - Canvas: read/create/update/delete plus semantic node and edge tools
@@ -133,6 +133,53 @@ Then replace using the returned revision:
 ```
 
 New paths use `mode: "create"` and do not need a revision.
+
+### Read a note section
+
+`obsidian_read_note_section` accepts `{ path, heading, occurrence?, max_chars? }`:
+
+```json
+{ "path": "Projects/Plan.md", "heading": "Milestones", "max_chars": 4000 }
+```
+
+It returns `{ path, heading, level, content, truncated, start_line, end_line, revision }`.
+Heading matching uses case-sensitive AST plain text with surrounding whitespace
+trimmed, as in metadata/heading patches. Both ATX (`## Heading`) and setext
+headings are supported. Duplicate text requires a 1-based `occurrence`, otherwise
+the tool returns `AMBIGUOUS_HEADING`. Missing headings and occurrences beyond the
+matching count return `HEADING_NOT_FOUND`; non-integer or non-positive occurrences
+fail input validation. Code-fence and indented-code pseudo-headings are ignored.
+
+`content` is the exact original **body**, excluding the selected heading (including
+both lines of a setext heading) and its terminating newline. It includes nested
+headings and ends before the entire line of the next heading of equal or lower
+level, or at EOF. Leading/trailing whitespace, blank lines, Unicode and newline
+style are preserved without normalization. A file-leading BOM is excluded from
+parsing and is outside the returned body; a BOM within the body is preserved.
+An empty section returns `content: ""` and `truncated: false`.
+
+Line bounds are 1-based source lines for the **full, untruncated body**, expressed
+as `[start_line, end_line)` (end-exclusive). `start_line` is the line following the
+heading; `end_line` is the line after the last body line, counting a final line
+without a newline. For an empty body both equal the line after the heading, even
+when that line is beyond EOF. For `# A\nbody\n# B\n`, reading `A` returns
+`content: "body\n"`, `start_line: 2`, `end_line: 3`.
+
+`max_chars` bounds **body content** in UTF-16 code units (JavaScript string length):
+default 20,000, minimum 1, hard maximum 100,000. Values outside this integer range
+fail input validation. A truncation boundary retreats by one unit if necessary to
+avoid splitting a Unicode surrogate pair; consequently a limit of 1 can return
+an empty string for a body starting with an emoji. `truncated` is true exactly
+when body content was omitted. Line bounds and revision do not change with the
+limit; `revision` is the backend's revision of the whole note, or `null` when the
+backend supplies none. The tool does not fabricate a section hash.
+
+Both filesystem and deprecated Local REST backends use their existing `readNote`
+path. Filesystem reads retain read ACL, path/symlink protection and whole-file size
+limits, even for a tiny section request, and work in read-only mode. Local REST
+retains its existing read behavior and upstream protections; revision comes from
+its ETag or Last-Modified, when available. Section reads do not write notes or
+update `agents_edit_at`.
 
 ## Automatic agent edit timestamp
 
