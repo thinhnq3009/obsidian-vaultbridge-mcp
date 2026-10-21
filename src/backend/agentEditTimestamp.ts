@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 
-import { isMap, isScalar, parseDocument } from "yaml";
+import { isMap, isNode, isScalar, parseDocument, visit } from "yaml";
 
 import { VaultError } from "../types.js";
 
@@ -30,7 +30,9 @@ function frontmatter(content: string) {
   const block = match?.index === 0 ? match : null;
   if (!block && /^---[ \t]*(?:\r?\n|$)/u.test(source)) invalid("Unclosed YAML frontmatter.");
   const yaml = block?.[2] ?? "";
-  const document = parseDocument(yaml, { keepSourceTokens: true });
+  // Check uniqueness after lossless normalization, rather than letting rounded
+  // parser numbers decide which keys are equal.
+  const document = parseDocument(yaml, { keepSourceTokens: true, intAsBigInt: true, uniqueKeys: false });
   if (document.errors.length || (document.contents !== null && !isMap(document.contents))) invalid("Frontmatter must be a valid YAML mapping.");
   const mapping = isMap(document.contents) ? document.contents : undefined;
   if (mapping?.items.some((pair) => !isScalar(pair.key) || typeof pair.key.value !== "string")) invalid("Frontmatter keys must be strings.");
@@ -41,12 +43,36 @@ function frontmatter(content: string) {
   if (managed && (!isScalar(value) || value.anchor || value.tag || value.type === "BLOCK_LITERAL" || value.type === "BLOCK_FOLDED" || !value.range)) invalid(`${agentEditField} must be an untagged scalar without an anchor.`);
   const range = isScalar(value) ? value.range : undefined;
   const rawManaged = range ? yaml.slice(range[0], range[1]) : undefined;
-  const properties: unknown = document.toJS();
-  if (properties && typeof properties === "object") Reflect.deleteProperty(properties, agentEditField);
+  // Normalize scalar nodes before resolving aliases, which may contain cycles.
+  // Float identity comes from source text, never an already rounded JS number.
+  visit(document, {
+    Scalar(_key, node) {
+      if (typeof node.value === "bigint") {
+        const source = node.value === 0n && node.source?.startsWith("-") ? "-0" : node.value.toString();
+        node.value = exactNumber(source);
+      } else if (typeof node.value === "number") {
+        node.value = exactNumber(node.source ?? "") ?? node.value; // NaN and explicit infinities stay numbers.
+      }
+    },
+  });
+  visit(document, {
+    Map(_key, node) {
+      const keys: unknown[] = [];
+      for (const pair of node.items) {
+        const key: unknown = isNode(pair.key) ? pair.key.toJS(document, { mapAsMap: true }) : pair.key;
+        if (keys.some((previous) => isDeepStrictEqual(previous, key))) invalid("Frontmatter mapping keys must be unique after numeric normalization.");
+        keys.push(key);
+      }
+    },
+  });
+  // Map keeps numeric, string and collection keys distinct instead of coercing
+  // them to object property names. Validation above prevents equivalent keys.
+  const properties: unknown = document.toJS({ mapAsMap: true });
+  if (properties instanceof Map) properties.delete(agentEditField);
   return {
     bom,
     body: block ? source.slice(block[0].length) : source,
-    properties: properties ?? {},
+    properties: properties ?? new Map(),
     managed: rawManaged,
     set(raw: string): string {
       let updated: string;
@@ -66,6 +92,23 @@ function frontmatter(content: string) {
       return bom + source.slice(0, start) + updated + source.slice(start + yaml.length);
     },
   };
+}
+
+// A distinct type keeps numbers separate from user strings/maps. A decimal
+// coefficient and exponent avoid both IEEE-754 rounding and expanding 1e999999.
+class ExactYamlNumber {
+  constructor(readonly coefficient: string, readonly exponent: bigint) {}
+}
+
+function exactNumber(source: string): ExactYamlNumber | undefined {
+  const match = /^([+-]?)(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/u.exec(source.replace(/_/gu, ""));
+  if (!match || !(match[2] || match[3])) return undefined;
+  const fraction = match[3] ?? "";
+  const digits = `${match[2]}${fraction}`.replace(/^0+/u, "");
+  if (!digits) return new ExactYamlNumber(match[1] === "-" ? "-0" : "0", 0n);
+  const coefficient = digits.replace(/0+$/u, "");
+  const exponent = BigInt(match[4] ?? "0") - BigInt(fraction.length) + BigInt(digits.length - coefficient.length);
+  return new ExactYamlNumber(`${match[1] === "-" ? "-" : ""}${coefficient}`, exponent);
 }
 
 function validated(content: string): string {

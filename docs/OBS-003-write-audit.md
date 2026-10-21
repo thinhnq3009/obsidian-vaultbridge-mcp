@@ -18,9 +18,33 @@ Both content-write funnels validate the final UTF-8 size immediately before the
 single `atomicWrite`. Final persisted bytes supply the revision hash. Replacement
 and transformed writes still require current revision before no-op detection.
 No-op compares exact body and BOM plus parsed YAML properties after excluding the
-reserved field. Formatting/comment-only replacements are no-ops. Missing frontmatter
+reserved field. Integers are parsed as `bigint`; decimal floats are read from
+their exact YAML scalar source. Both normalize to a distinct internal numeric
+type containing a decimal coefficient and exponent. This avoids using rounded
+JavaScript numbers for equality and preserves numeric no-ops such as
+`9007199254740993` versus `9007199254740993.0`, including nested values and aliases.
+Fractions, overflow and underflow exponents also retain exact identity without
+expanding the exponent into a large string or integer. Negative zero retains
+its sign; explicit infinities and NaN retain their existing comparison behavior.
+Formatting/comment-only replacements are no-ops. Missing frontmatter
 and an empty mapping are equivalent. No-op keeps the original bytes, mtime and
 revision, including notes that have never had a timestamp.
+
+Parser-level duplicate checks are deferred because they compare rounded values.
+After numeric normalization, every mapping is checked for equivalent keys,
+including aliases and nested mappings. Collisions fail with `INVALID_MARKDOWN`
+before no-op comparison or persistence. Comparison uses `Map` rather than object
+properties, so distinct numeric, string and collection keys cannot shadow one
+another through string coercion. Scalar normalization visits the AST before
+alias resolution so cyclic aliases remain supported. Reserved-field validation
+and timestamp edits still operate on the original source offsets.
+This canonical model is private to no-op detection; metadata responses and the
+frontmatter-patch serializer retain their existing JavaScript value model.
+
+PR #6 regressions cover #4, #8 and #9: adjacent unsafe integers, large
+integer/float no-ops in both directions, real float changes, numeric-key
+collisions and aliases, distinct numeric/string keys, BOM/CRLF/comments,
+original timestamp/revision/mtime preservation, and single atomic writes.
 
 Timestamp surgery uses YAML node offsets rather than serializing unrelated fields;
 block/flow mappings, quoted keys, BOM, CRLF and comments survive. Malformed/unclosed
