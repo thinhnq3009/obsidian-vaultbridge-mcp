@@ -3,6 +3,9 @@
 Tracks issues [#12](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/12),
 [#13](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/13) and
 [#15](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/15).
+Delivery: [PR #21](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/pull/21),
+targeting `main`; the PR description and delivery commit contain closing keywords
+for all three issues. Issue closure takes effect when the changes reach `main`.
 Baseline: `main` at `5a6c006f3762a11b77f5f73c2425a93f5cdd17de`.
 Verification used Linux, Node 24.20.0 and disposable synthetic vaults only.
 
