@@ -37,6 +37,11 @@ export class VaultSearchService {
   private error: string | undefined;
   private persistChain: Promise<void> = Promise.resolve();
   private readonly pendingEvents = new Set<Promise<void>>();
+  // Every index read/refresh shares one queue. Events describe paths to reconcile,
+  // never historical document contents or a blind instruction to delete an ID.
+  private operationChain: Promise<unknown> = Promise.resolve();
+  private consistencyError: string | undefined;
+  private cacheDirty = false;
 
   public constructor(
     private readonly vaultRoot: string,
@@ -65,6 +70,8 @@ export class VaultSearchService {
   public async close(): Promise<void> {
     await this.watcher?.close();
     await Promise.allSettled(this.pendingEvents);
+    await this.operationChain;
+    if (this.cacheDirty && !this.consistencyError && this.effectiveMode === "indexed") await this.persist();
     await this.persistChain;
   }
 
@@ -72,7 +79,20 @@ export class VaultSearchService {
     return { state: this.state, mode: this.effectiveMode, error: this.error };
   }
 
-  public async rebuild(): Promise<{ indexedFiles: number; mode: string }> {
+  public rebuild(): Promise<{ indexedFiles: number; mode: string }> {
+    return this.enqueue(async () => {
+      try {
+        const result = await this.rebuildNow();
+        this.consistencyError = undefined;
+        return result;
+      } catch (error) {
+        this.failConsistency(error);
+        throw error;
+      }
+    });
+  }
+
+  private async rebuildNow(): Promise<{ indexedFiles: number; mode: string }> {
     this.state = "building";
     this.error = undefined;
     await this.scanDocuments();
@@ -82,11 +102,18 @@ export class VaultSearchService {
     return { indexedFiles: this.documents.size, mode: this.effectiveMode };
   }
 
-  public async search(query: SearchQuery): Promise<SearchResponse> {
-    if (this.documents.size === 0) await this.scanDocuments();
+  public search(query: SearchQuery): Promise<SearchResponse> {
+    return this.enqueue(async () => {
+      if (this.consistencyError) throw new VaultError(`Search index is unavailable: ${this.consistencyError}. Rebuild the search index before searching.`, { code: "INDEX_ERROR" });
+      return this.searchNow(query);
+    });
+  }
+
+  private async searchNow(query: SearchQuery): Promise<SearchResponse> {
     if (await this.pruneUnauthorized() && this.effectiveMode === "indexed") await this.persist();
     const offset = decodeCursor(query.cursor);
-    let results = this.effectiveMode === "indexed" && query.query?.trim()
+    const exact = query.match === "exact" || query.caseSensitive === true;
+    let results = this.effectiveMode === "indexed" && !exact && query.query?.trim()
       ? this.miniSearch.search(query.query, { prefix: true, fuzzy: 0.2 }).map((result) => ({ document: this.documents.get(String(result.id)), score: result.score }))
       : [...this.documents.values()].map((document) => ({ document, score: 1 }));
 
@@ -100,7 +127,7 @@ export class VaultSearchService {
       if (query.tag && !document.tags.includes(query.tag.replace(/^#/u, ""))) return false;
       if (query.frontmatter && !Object.entries(query.frontmatter).every(([key, value]) => deepEqual(document.frontmatter[key], value))) return false;
       if (regex && !regex.test(document.content)) return false;
-      if (needle && this.effectiveMode === "scan") {
+      if (needle && (this.effectiveMode === "scan" || exact)) {
         const haystack = `${document.path}\n${document.content}`;
         if (query.caseSensitive ? !haystack.includes(needle) : !haystack.toLowerCase().includes(needle.toLowerCase())) return false;
       }
@@ -121,6 +148,69 @@ export class VaultSearchService {
       results: output,
       ...(nextOffset < results.length ? { nextCursor: encodeCursor(nextOffset) } : {}),
     };
+  }
+
+  /** Reconcile committed mutations (under their lock) and watcher paths. */
+  public synchronize(absolutePaths: string[], subtree = false): Promise<void> {
+    return this.enqueue(async () => {
+      try {
+        if (this.consistencyError) throw new VaultError("Search index requires a successful rebuild.", { code: "INDEX_ERROR" });
+        // Persisted bodies are never loaded at startup. Invalidate the old cache
+        // once, then write a fresh snapshot on close/rebuild, not on every note.
+        if (!this.cacheDirty) {
+          await fs.rm(path.join(this.cacheDir, INDEX_FILE), { force: true });
+          this.cacheDirty = true;
+        }
+        const affected = new Set(absolutePaths);
+        // Reconcile canonical targets too when writes use an allowed in-vault
+        // directory alias. Search continues to exclude the alias itself.
+        for (const absolute of absolutePaths) {
+          try { affected.add(await fs.realpath(absolute)); }
+          catch (error) { if (!isMissing(error)) throw error; }
+        }
+        for (const absolute of affected) await this.reconcile(absolute, subtree);
+      } catch (error) {
+        this.failConsistency(error);
+        throw error;
+      }
+    });
+  }
+
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const pending = this.operationChain.then(operation);
+    this.operationChain = pending.catch(() => undefined);
+    return pending;
+  }
+
+  private failConsistency(error: unknown): void {
+    this.consistencyError = error instanceof Error ? error.message : String(error);
+    this.state = "degraded";
+    this.error = this.consistencyError;
+  }
+
+  private async reconcile(absolute: string, subtree: boolean): Promise<void> {
+    const relative = toVaultPath(path.relative(this.vaultRoot, absolute));
+    let stat;
+    try {
+      stat = await fs.lstat(absolute);
+    } catch (error) {
+      if (!isMissing(error)) throw error;
+    }
+    // Remove stale descendants even when a directory disappeared or became a
+    // file/link. A file edit only updates that one ID; no vault walk or rebuild.
+    if (subtree || stat?.isDirectory()) {
+      for (const documentPath of this.documents.keys()) {
+        if (documentPath.startsWith(`${relative}/`)) this.remove(path.join(this.vaultRoot, documentPath));
+      }
+    }
+    if (stat?.isDirectory()) {
+      this.remove(absolute);
+      const files = isExcluded(this.vaultRoot, absolute) ? []
+        : await collectMarkdownFiles(absolute, this.maxFileSizeBytes, this.accessPolicy);
+      for (const file of files) await this.upsert(file);
+    } else {
+      await this.upsert(absolute);
+    }
   }
 
   private async loadOrBuild(): Promise<void> {
@@ -147,7 +237,7 @@ export class VaultSearchService {
     this.documents.clear();
     this.miniSearch = createMiniSearch();
     const candidates = files ?? await collectMarkdownFiles(this.vaultRoot, this.maxFileSizeBytes, this.accessPolicy);
-    for (const absolutePath of candidates) await this.upsert(absolutePath, false);
+    for (const absolutePath of candidates) await this.upsert(absolutePath);
     this.rebuildMiniSearch();
   }
 
@@ -156,17 +246,17 @@ export class VaultSearchService {
     this.miniSearch.addAll([...this.documents.values()]);
   }
 
-  private async upsert(absolutePath: string, persist = true): Promise<void> {
+  private async upsert(absolutePath: string): Promise<void> {
     const relative = toVaultPath(path.relative(this.vaultRoot, absolutePath));
     try {
       if (!absolutePath.toLowerCase().endsWith(".md") || isExcluded(this.vaultRoot, absolutePath)
         || !(await this.accessPolicy.allowsSearchPath(absolutePath))) {
-        await this.remove(absolutePath, persist);
+        this.remove(absolutePath);
         return;
       }
       const stat = await fs.lstat(absolutePath);
       if (!stat.isFile() || stat.size > this.maxFileSizeBytes) {
-        await this.remove(absolutePath, persist);
+        this.remove(absolutePath);
         return;
       }
       // Open the final component without following links where supported. Validate
@@ -177,14 +267,14 @@ export class VaultSearchService {
         const opened = await handle.stat();
         if (!opened.isFile() || opened.dev !== stat.dev || opened.ino !== stat.ino || opened.size > this.maxFileSizeBytes
           || !(await this.accessPolicy.allowsSearchPath(absolutePath))) {
-          await this.remove(absolutePath, persist);
+          this.remove(absolutePath);
           return;
         }
         content = await handle.readFile("utf8");
         const current = await fs.lstat(absolutePath);
         if (Buffer.byteLength(content, "utf8") > this.maxFileSizeBytes || current.dev !== opened.dev || current.ino !== opened.ino
           || !(await this.accessPolicy.allowsSearchPath(absolutePath))) {
-          await this.remove(absolutePath, persist);
+          this.remove(absolutePath);
           return;
         }
       } finally {
@@ -208,19 +298,19 @@ export class VaultSearchService {
       this.documents.set(relative, document);
       if (previous && this.miniSearch.has(previous.id)) this.miniSearch.replace(document);
       else this.miniSearch.add(document);
-      if (persist && this.effectiveMode === "indexed") await this.persist();
-    } catch {
-      // A watcher event may race with a rename, deletion or link replacement.
-      await this.remove(absolutePath, persist);
+    } catch (error) {
+      // A missing path/link can race with a commit. Unexpected read/index errors
+      // must reach synchronize; success must never conceal a stale snapshot.
+      if (!isMissing(error) && !(error instanceof Error && "code" in error && error.code === "ELOOP")) throw error;
+      this.remove(absolutePath);
     }
   }
 
-  private async remove(absolutePath: string, persist = true): Promise<void> {
+  private remove(absolutePath: string): void {
     const relative = toVaultPath(path.relative(this.vaultRoot, absolutePath));
     const previous = this.documents.get(relative);
     if (previous && this.miniSearch.has(previous.id)) this.miniSearch.discard(previous.id);
     this.documents.delete(relative);
-    if (previous && persist && this.effectiveMode === "indexed") await this.persist();
   }
 
   private async pruneUnauthorized(): Promise<boolean> {
@@ -228,7 +318,7 @@ export class VaultSearchService {
     for (const relative of this.documents.keys()) {
       const absolute = path.join(this.vaultRoot, relative);
       if (isExcluded(this.vaultRoot, absolute) || !(await this.accessPolicy.allowsSearchPath(absolute))) {
-        await this.remove(absolute, false);
+        this.remove(absolute);
         removed = true;
       }
     }
@@ -250,9 +340,10 @@ export class VaultSearchService {
       const pending = operation.catch(degrade).finally(() => { this.pendingEvents.delete(pending); });
       this.pendingEvents.add(pending);
     };
-    this.watcher.on("add", (file) => { track(this.upsert(file)); });
-    this.watcher.on("change", (file) => { track(this.upsert(file)); });
-    this.watcher.on("unlink", (file) => { track(this.remove(file)); });
+    this.watcher.on("add", (file) => { track(this.synchronize([file])); });
+    this.watcher.on("change", (file) => { track(this.synchronize([file])); });
+    this.watcher.on("unlink", (file) => { track(this.synchronize([file])); });
+    this.watcher.on("unlinkDir", (directory) => { track(this.synchronize([directory], true)); });
     this.watcher.on("error", degrade);
     await new Promise<void>((resolve) => {
       this.watcher!.once("ready", resolve);
@@ -272,6 +363,7 @@ export class VaultSearchService {
     try {
       await fs.writeFile(temporary, JSON.stringify({ documents: [...this.documents.values()], savedAt: new Date().toISOString() } satisfies PersistedIndex), "utf8");
       await fs.rename(temporary, destination);
+      this.cacheDirty = false;
     } finally {
       await fs.unlink(temporary).catch(() => undefined);
     }
@@ -339,4 +431,8 @@ function isUnsafeRegex(value: string): boolean {
   if (value.length > 256) return true;
   if (/\\[1-9]|\(\?<([=!])|\(\?<[A-Za-z]/u.test(value)) return true;
   return /\([^)]*[+*][^)]*\)[+*{]/u.test(value);
+}
+
+function isMissing(error: unknown): boolean {
+  return error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR");
 }

@@ -138,7 +138,10 @@ export class FilesystemVaultBackend implements VaultBackend {
         requireRevision(options.expectedRevision, existing.revision);
       }
       const next = this.prepareWrite(resolved.relative, content, existing?.content);
-      if (!existing || next !== existing.content) await atomicWrite(resolved.absolute, next, existing?.mode);
+      if (!existing || next !== existing.content) {
+        await atomicWrite(resolved.absolute, next, existing?.mode);
+        await this.synchronizeCommitted([resolved.absolute]);
+      }
       return { path: resolved.relative, message: existing ? "File replaced successfully." : "File created successfully.", revision: revisionForContent(next) };
     });
   }
@@ -164,6 +167,7 @@ export class FilesystemVaultBackend implements VaultBackend {
     const resolved = await this.accessPolicy.resolve(input, "write", true, true);
     await this.withPathLock(resolved.relative, async () => {
       const stat = await fs.stat(resolved.absolute);
+      const canonical = await fs.realpath(resolved.absolute);
       if (stat.isFile()) {
         const revision = await revisionForFile(resolved.absolute, this.config.maxFileSizeBytes);
         requireRevision(options.expectedRevision, revision);
@@ -172,6 +176,7 @@ export class FilesystemVaultBackend implements VaultBackend {
         if (!options.recursive) throw new VaultError("Folder deletion requires recursive=true.", { code: "ACCESS_DENIED" });
         await fs.rm(resolved.absolute, { recursive: true, force: false });
       }
+      await this.synchronizeCommitted([resolved.absolute, canonical], stat.isDirectory());
     });
   }
 
@@ -190,7 +195,11 @@ export class FilesystemVaultBackend implements VaultBackend {
       }
       await fs.mkdir(path.dirname(destination.absolute), { recursive: true });
       const movedFiles = sourceStat.isDirectory() ? await countFiles(source.absolute, this.config.maxTreeEntries) : 1;
-      await fs.rename(source.absolute, destination.absolute);
+      if (source.absolute !== destination.absolute) {
+        const canonicalSource = await fs.realpath(source.absolute);
+        await fs.rename(source.absolute, destination.absolute);
+        await this.synchronizeCommitted([source.absolute, canonicalSource, destination.absolute], sourceStat.isDirectory());
+      }
       return { sourcePath: source.relative, destinationPath: destination.relative, kind: sourceStat.isDirectory() ? "folder" as const : "file" as const, movedFiles };
     });
   }
@@ -260,9 +269,23 @@ export class FilesystemVaultBackend implements VaultBackend {
       if (!existing) throw new VaultError(`Path does not exist: ${resolved.relative}`, { code: "NOT_FOUND" });
       requireRevision(expectedRevision, existing.revision);
       const next = this.prepareWrite(resolved.relative, transform(existing.content), existing.content);
-      if (next !== existing.content) await atomicWrite(resolved.absolute, next, existing.mode);
+      if (next !== existing.content) {
+        await atomicWrite(resolved.absolute, next, existing.mode);
+        await this.synchronizeCommitted([resolved.absolute]);
+      }
       return { path: resolved.relative, message, revision: revisionForContent(next) };
     });
+  }
+
+  private async synchronizeCommitted(absolutePaths: string[], subtree = false): Promise<void> {
+    try {
+      await this.searchService!.synchronize(absolutePaths, subtree);
+    } catch (error) {
+      throw new VaultError("Filesystem mutation committed, but search synchronization failed. Read the current state/revision before retrying; rebuild the search index to recover.", {
+        code: "INDEX_ERROR",
+        details: { committed: true, paths: absolutePaths.map((absolute) => path.relative(this.vaultRealPath, absolute)), cause: error instanceof Error ? error.message : String(error) },
+      });
+    }
   }
 
   private prepareWrite(relative: string, content: string, previous?: string): string {

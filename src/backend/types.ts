@@ -41,6 +41,8 @@ export type PathStat = {
 };
 
 export type SearchQuery = {
+  /** Internal qualification mode used by advanced search; simple search keeps mode-specific ranking. */
+  match?: "exact";
   query?: string;
   folder?: string;
   tag?: string;

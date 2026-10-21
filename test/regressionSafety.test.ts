@@ -79,11 +79,9 @@ describe("OBS-001 filesystem safety", () => {
     expect((await fixture.backend.search({ query: "excluded_marker", limit: 10 })).results).toEqual([]);
   });
 
-  it("KNOWN K04: scan/watch-off search misses a create until explicit rebuild", async () => {
+  it("K04 regression: scan/watch-off search observes a committed create immediately", async () => {
     await fixture.backend.writeNote("Created.md", "fresh_marker");
     expect((await fixture.backend.readNote("Created.md")).content).toBe("fresh_marker");
-    expect((await fixture.backend.search({ query: "fresh_marker", limit: 10 })).results).toEqual([]);
-    await fixture.backend.rebuildSearchIndex();
     expect((await fixture.backend.search({ query: "fresh_marker", limit: 10 })).results.map((result) => result.path)).toEqual(["Created.md"]);
   });
 
