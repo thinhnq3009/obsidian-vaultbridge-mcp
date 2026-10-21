@@ -34,7 +34,7 @@ afterEach(async () => {
 });
 
 const expectedTools = [
-  "list_files", "read_note", "read_note_metadata", "read_canvas", "write_note", "write_notes_bulk",
+  "list_files", "read_note", "read_note_section", "read_note_metadata", "read_canvas", "write_note", "write_notes_bulk",
   "create_canvas", "update_canvas", "delete_canvas", "append_to_note", "apply_note_edits", "patch_heading", "patch_frontmatter",
   "search", "search_content_advanced", "add_canvas_node", "update_canvas_node", "remove_canvas_node",
   "add_canvas_edge", "update_canvas_edge", "remove_canvas_edge", "move_path", "rename_path", "delete_path",
@@ -44,7 +44,22 @@ const expectedTools = [
 describe("OBS-001 actual MCP contracts", () => {
   beforeEach(async () => { await connect(); });
 
-  it("advertises exactly the current 32 tools and their JSON schemas", async () => {
+  it("denies deleting, moving or renaming the vault root through MCP", async () => {
+    const calls = [
+      { name: "obsidian_delete_path", arguments: { path: ".", recursive: true } },
+      { name: "obsidian_move_path", arguments: { source_path: "./", destination_path: "Moved" } },
+      { name: "obsidian_move_path", arguments: { source_path: "Comments.md", destination_path: "." } },
+      { name: "obsidian_rename_path", arguments: { path: ".", new_name: "Renamed" } },
+    ];
+    for (const call of calls) {
+      const result = await client.callTool(call);
+      expect(result.isError).toBe(true);
+      expect(errorText(result.content)).toContain("ACCESS_DENIED");
+      expect(await fixture.bytes("Comments.md")).toEqual(Buffer.from(regressionNotes["Comments.md"]));
+    }
+  });
+
+  it("advertises exactly the current 33 tools and their JSON schemas", async () => {
     const list = await client.listTools();
     expect(list.tools.map((tool) => tool.name).sort()).toEqual(expectedTools);
     expect(list.nextCursor).toBeUndefined();
@@ -52,7 +67,8 @@ describe("OBS-001 actual MCP contracts", () => {
       expect(tool.inputSchema.type).toBe("object");
       expect(tool.outputSchema?.type).toBe("object");
     }
-    expect(expectedTools).not.toContain("obsidian_read_note_section");
+    expect(list.tools).toHaveLength(33);
+    expect(expectedTools).toContain("obsidian_read_note_section");
     expect(expectedTools).toContain("obsidian_apply_note_edits");
   });
 

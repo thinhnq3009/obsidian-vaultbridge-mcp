@@ -1,3 +1,4 @@
+import { constants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -7,6 +8,7 @@ import MiniSearch from "minisearch";
 
 import type { IndexMode, WatchMode } from "../types.js";
 import { VaultError } from "../types.js";
+import type { VaultAccessPolicy } from "./accessPolicy.js";
 import { parseMetadata } from "./markdown.js";
 import type { SearchQuery, SearchResponse } from "./types.js";
 
@@ -34,6 +36,7 @@ export class VaultSearchService {
   private state: "scan" | "ready" | "building" | "degraded" = "scan";
   private error: string | undefined;
   private persistChain: Promise<void> = Promise.resolve();
+  private readonly pendingEvents = new Set<Promise<void>>();
 
   public constructor(
     private readonly vaultRoot: string,
@@ -41,10 +44,13 @@ export class VaultSearchService {
     private readonly indexMode: IndexMode,
     private readonly watchMode: WatchMode,
     private readonly maxFileSizeBytes: number,
+    private readonly accessPolicy: VaultAccessPolicy,
   ) {}
 
   public async initialize(): Promise<void> {
     await fs.mkdir(this.cacheDir, { recursive: true });
+    // Never load cached note bodies: a previous process may have had broader scopes.
+    await fs.rm(path.join(this.cacheDir, INDEX_FILE), { force: true });
     try {
       await this.loadOrBuild();
     } catch (error) {
@@ -53,11 +59,12 @@ export class VaultSearchService {
       this.effectiveMode = "scan";
       await this.scanDocuments();
     }
-    if (this.watchMode !== "off") this.startWatcher();
+    if (this.watchMode !== "off") await this.startWatcher();
   }
 
   public async close(): Promise<void> {
     await this.watcher?.close();
+    await Promise.allSettled(this.pendingEvents);
     await this.persistChain;
   }
 
@@ -77,6 +84,7 @@ export class VaultSearchService {
 
   public async search(query: SearchQuery): Promise<SearchResponse> {
     if (this.documents.size === 0) await this.scanDocuments();
+    if (await this.pruneUnauthorized() && this.effectiveMode === "indexed") await this.persist();
     const offset = decodeCursor(query.cursor);
     let results = this.effectiveMode === "indexed" && query.query?.trim()
       ? this.miniSearch.search(query.query, { prefix: true, fuzzy: 0.2 }).map((result) => ({ document: this.documents.get(String(result.id)), score: result.score }))
@@ -116,7 +124,7 @@ export class VaultSearchService {
   }
 
   private async loadOrBuild(): Promise<void> {
-    const files = await collectMarkdownFiles(this.vaultRoot, this.maxFileSizeBytes);
+    const files = await collectMarkdownFiles(this.vaultRoot, this.maxFileSizeBytes, this.accessPolicy);
     this.effectiveMode = this.resolveMode(files.length);
     if (this.effectiveMode === "scan") {
       await this.scanDocuments(files);
@@ -124,17 +132,9 @@ export class VaultSearchService {
       return;
     }
 
-    try {
-      const raw = await fs.readFile(path.join(this.cacheDir, INDEX_FILE), "utf8");
-      const persisted = JSON.parse(raw) as PersistedIndex;
-      for (const document of persisted.documents) this.documents.set(document.path, document);
-      this.rebuildMiniSearch();
-      await this.scanDocuments(files);
-      await this.persist();
-      this.state = "ready";
-    } catch {
-      await this.rebuild();
-    }
+    await this.scanDocuments(files);
+    await this.persist();
+    this.state = "ready";
   }
 
   private resolveMode(fileCount: number): "scan" | "indexed" {
@@ -146,7 +146,7 @@ export class VaultSearchService {
   private async scanDocuments(files?: string[]): Promise<void> {
     this.documents.clear();
     this.miniSearch = createMiniSearch();
-    const candidates = files ?? await collectMarkdownFiles(this.vaultRoot, this.maxFileSizeBytes);
+    const candidates = files ?? await collectMarkdownFiles(this.vaultRoot, this.maxFileSizeBytes, this.accessPolicy);
     for (const absolutePath of candidates) await this.upsert(absolutePath, false);
     this.rebuildMiniSearch();
   }
@@ -157,12 +157,39 @@ export class VaultSearchService {
   }
 
   private async upsert(absolutePath: string, persist = true): Promise<void> {
-    if (!absolutePath.toLowerCase().endsWith(".md") || isExcluded(this.vaultRoot, absolutePath)) return;
+    const relative = toVaultPath(path.relative(this.vaultRoot, absolutePath));
     try {
-      const stat = await fs.stat(absolutePath);
-      if (!stat.isFile() || stat.size > this.maxFileSizeBytes) return;
-      const content = await fs.readFile(absolutePath, "utf8");
-      const relative = toVaultPath(path.relative(this.vaultRoot, absolutePath));
+      if (!absolutePath.toLowerCase().endsWith(".md") || isExcluded(this.vaultRoot, absolutePath)
+        || !(await this.accessPolicy.allowsSearchPath(absolutePath))) {
+        await this.remove(absolutePath, persist);
+        return;
+      }
+      const stat = await fs.lstat(absolutePath);
+      if (!stat.isFile() || stat.size > this.maxFileSizeBytes) {
+        await this.remove(absolutePath, persist);
+        return;
+      }
+      // Open the final component without following links where supported. Validate
+      // the descriptor and full canonical path again to catch replacement races.
+      const handle = await fs.open(absolutePath, constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW));
+      let content: string;
+      try {
+        const opened = await handle.stat();
+        if (!opened.isFile() || opened.dev !== stat.dev || opened.ino !== stat.ino || opened.size > this.maxFileSizeBytes
+          || !(await this.accessPolicy.allowsSearchPath(absolutePath))) {
+          await this.remove(absolutePath, persist);
+          return;
+        }
+        content = await handle.readFile("utf8");
+        const current = await fs.lstat(absolutePath);
+        if (Buffer.byteLength(content, "utf8") > this.maxFileSizeBytes || current.dev !== opened.dev || current.ino !== opened.ino
+          || !(await this.accessPolicy.allowsSearchPath(absolutePath))) {
+          await this.remove(absolutePath, persist);
+          return;
+        }
+      } finally {
+        await handle.close();
+      }
       let metadata: ReturnType<typeof parseMetadata>;
       try {
         metadata = parseMetadata(content);
@@ -183,30 +210,53 @@ export class VaultSearchService {
       else this.miniSearch.add(document);
       if (persist && this.effectiveMode === "indexed") await this.persist();
     } catch {
-      // A watcher event may race with a rename or delete.
+      // A watcher event may race with a rename, deletion or link replacement.
+      await this.remove(absolutePath, persist);
     }
   }
 
-  private async remove(absolutePath: string): Promise<void> {
+  private async remove(absolutePath: string, persist = true): Promise<void> {
     const relative = toVaultPath(path.relative(this.vaultRoot, absolutePath));
     const previous = this.documents.get(relative);
     if (previous && this.miniSearch.has(previous.id)) this.miniSearch.discard(previous.id);
     this.documents.delete(relative);
-    if (this.effectiveMode === "indexed") await this.persist();
+    if (previous && persist && this.effectiveMode === "indexed") await this.persist();
   }
 
-  private startWatcher(): void {
+  private async pruneUnauthorized(): Promise<boolean> {
+    let removed = false;
+    for (const relative of this.documents.keys()) {
+      const absolute = path.join(this.vaultRoot, relative);
+      if (isExcluded(this.vaultRoot, absolute) || !(await this.accessPolicy.allowsSearchPath(absolute))) {
+        await this.remove(absolute, false);
+        removed = true;
+      }
+    }
+    return removed;
+  }
+
+  private async startWatcher(): Promise<void> {
     this.watcher = chokidar.watch(this.vaultRoot, {
       ignoreInitial: true,
-      ignored: (watchedPath) => isExcluded(this.vaultRoot, watchedPath),
+      followSymlinks: false,
+      ignored: (watchedPath) => isExcluded(this.vaultRoot, watchedPath) || !this.accessPolicy.mayTraverse(watchedPath),
       awaitWriteFinish: { stabilityThreshold: 250, pollInterval: 50 },
     });
-    this.watcher.on("add", (file) => void this.upsert(file));
-    this.watcher.on("change", (file) => void this.upsert(file));
-    this.watcher.on("unlink", (file) => void this.remove(file));
-    this.watcher.on("error", (error) => {
+    const degrade = (error: unknown) => {
       this.state = "degraded";
       this.error = error instanceof Error ? error.message : String(error);
+    };
+    const track = (operation: Promise<void>) => {
+      const pending = operation.catch(degrade).finally(() => { this.pendingEvents.delete(pending); });
+      this.pendingEvents.add(pending);
+    };
+    this.watcher.on("add", (file) => { track(this.upsert(file)); });
+    this.watcher.on("change", (file) => { track(this.upsert(file)); });
+    this.watcher.on("unlink", (file) => { track(this.remove(file)); });
+    this.watcher.on("error", degrade);
+    await new Promise<void>((resolve) => {
+      this.watcher!.once("ready", resolve);
+      this.watcher!.once("error", () => { resolve(); });
     });
   }
 
@@ -216,6 +266,7 @@ export class VaultSearchService {
   }
 
   private async writePersistedIndex(): Promise<void> {
+    await this.pruneUnauthorized();
     const destination = path.join(this.cacheDir, INDEX_FILE);
     const temporary = `${destination}.${process.pid}.${randomUUID()}.tmp`;
     try {
@@ -231,16 +282,18 @@ function createMiniSearch(): MiniSearch<SearchDocument> {
   return new MiniSearch<SearchDocument>({ fields: ["title", "path", "content", "tags"], storeFields: ["path"], tokenize: (value) => value.toLowerCase().split(/[^\p{L}\p{N}_/-]+/u).filter(Boolean) });
 }
 
-async function collectMarkdownFiles(root: string, maxFileSizeBytes: number): Promise<string[]> {
+async function collectMarkdownFiles(root: string, maxFileSizeBytes: number, policy: VaultAccessPolicy): Promise<string[]> {
   const files: string[] = [];
   const walk = async (directory: string) => {
+    if (!(await policy.allowsSearchPath(directory, true))) return;
     for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
       const absolute = path.join(directory, entry.name);
       if (isExcluded(root, absolute)) continue;
       if (entry.isDirectory()) await walk(absolute);
       else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
-        const stat = await fs.stat(absolute);
-        if (stat.size <= maxFileSizeBytes) files.push(absolute);
+        if (!(await policy.allowsSearchPath(absolute))) continue;
+        const stat = await fs.lstat(absolute);
+        if (stat.isFile() && stat.size <= maxFileSizeBytes) files.push(absolute);
       }
     }
   };

@@ -35,6 +35,8 @@ The default transport is STDIO. Obsidian, API keys, certificates, and REST endpo
 - All tool paths are vault-relative; absolute, UNC, drive-qualified, traversal, and symlink-escape paths are rejected.
 - `READ_ONLY=true` disables every mutation.
 - `READ_PATHS` and `WRITE_PATHS` restrict operations to comma-separated vault-relative prefixes.
+- In filesystem mode, deleting, moving or renaming the vault root is denied, including `.` and symlink/junction aliases of the root.
+- Filesystem search applies the same `READ_PATHS` policy before reading notes, indexing, returning results and saving its cache. Search excludes symlinks and junctions, including aliases within the vault.
 - Writes use a same-directory temporary file, flush, and atomic rename.
 - Cross-process locks serialize mutations for the same path.
 - Reads return an opaque `sha256:...` revision. Updating an existing note or Canvas requires `expected_revision`; stale revisions return `CONFLICT` instead of overwriting newer data.
@@ -105,7 +107,7 @@ When Obsidian has exactly one open vault recorded locally, the `--vault` argumen
 
 Core tools retain their existing names:
 
-- Notes: `obsidian_read_note`, `obsidian_apply_note_edits`, `obsidian_write_note`, `obsidian_append_to_note`, `obsidian_patch_heading`, `obsidian_read_note_metadata`, `obsidian_patch_frontmatter`
+- Notes: `obsidian_read_note`, `obsidian_read_note_section`, `obsidian_apply_note_edits`, `obsidian_write_note`, `obsidian_append_to_note`, `obsidian_patch_heading`, `obsidian_read_note_metadata`, `obsidian_patch_frontmatter`
 - Filesystem: `obsidian_list_files`, `obsidian_create_folder`, `obsidian_tree`, `obsidian_stat_path`, `obsidian_move_path`, `obsidian_rename_path`, `obsidian_delete_path`
 - Search: `obsidian_search`, `obsidian_search_content_advanced`, `obsidian_rebuild_search_index`
 - Canvas: read/create/update/delete plus semantic node and edge tools
@@ -170,6 +172,53 @@ is applied once by the existing final write pipeline. This is **not** a
 multi-file transaction. The deprecated Local REST adapter rejects this tool
 with `UNSUPPORTED_CAPABILITY` rather than risking partial writes.
 
+### Read a note section
+
+`obsidian_read_note_section` accepts `{ path, heading, occurrence?, max_chars? }`:
+
+```json
+{ "path": "Projects/Plan.md", "heading": "Milestones", "max_chars": 4000 }
+```
+
+It returns `{ path, heading, level, content, truncated, start_line, end_line, revision }`.
+Heading matching uses case-sensitive AST plain text with surrounding whitespace
+trimmed, as in metadata/heading patches. Both ATX (`## Heading`) and setext
+headings are supported. Duplicate text requires a 1-based `occurrence`, otherwise
+the tool returns `AMBIGUOUS_HEADING`. Missing headings and occurrences beyond the
+matching count return `HEADING_NOT_FOUND`; non-integer or non-positive occurrences
+fail input validation. Code-fence and indented-code pseudo-headings are ignored.
+
+`content` is the exact original **body**, excluding the selected heading (including
+both lines of a setext heading) and its terminating newline. It includes nested
+headings and ends before the entire line of the next heading of equal or lower
+level, or at EOF. Leading/trailing whitespace, blank lines, Unicode and newline
+style are preserved without normalization. A file-leading BOM is excluded from
+parsing and is outside the returned body; a BOM within the body is preserved.
+An empty section returns `content: ""` and `truncated: false`.
+
+Line bounds are 1-based source lines for the **full, untruncated body**, expressed
+as `[start_line, end_line)` (end-exclusive). `start_line` is the line following the
+heading; `end_line` is the line after the last body line, counting a final line
+without a newline. For an empty body both equal the line after the heading, even
+when that line is beyond EOF. For `# A\nbody\n# B\n`, reading `A` returns
+`content: "body\n"`, `start_line: 2`, `end_line: 3`.
+
+`max_chars` bounds **body content** in UTF-16 code units (JavaScript string length):
+default 20,000, minimum 1, hard maximum 100,000. Values outside this integer range
+fail input validation. A truncation boundary retreats by one unit if necessary to
+avoid splitting a Unicode surrogate pair; consequently a limit of 1 can return
+an empty string for a body starting with an emoji. `truncated` is true exactly
+when body content was omitted. Line bounds and revision do not change with the
+limit; `revision` is the backend's revision of the whole note, or `null` when the
+backend supplies none. The tool does not fabricate a section hash.
+
+Both filesystem and deprecated Local REST backends use their existing `readNote`
+path. Filesystem reads retain read ACL, path/symlink protection and whole-file size
+limits, even for a tiny section request, and work in read-only mode. Local REST
+retains its existing read behavior and upstream protections; revision comes from
+its ETag or Last-Modified, when available. Section reads do not write notes or
+update `agents_edit_at`.
+
 ## Automatic agent edit timestamp
 
 Filesystem Markdown mutations automatically set the reserved frontmatter field
@@ -211,7 +260,9 @@ read/patch/write workaround or claim filesystem atomicity for this adapter.
 - `obsidian_read_note_metadata` returns frontmatter, tags and basic stat data without the note body. It also returns headings, link targets and the actual revision when provided by the backend; these fields remain optional for compatibility.
 - Filesystem metadata includes standard link URLs and Obsidian wikilink targets (without aliases or heading anchors). Inline code and code fences are excluded; numeric-only body references such as `#123` and `#6120` are not tags. Supported frontmatter tag forms are preserved.
 - `INDEX_MODE=auto` scans directly below 1,000 Markdown files and uses a persistent MiniSearch index at or above that threshold.
-- Watch mode incrementally updates search data after create, change, rename, or delete events. A damaged index degrades to scan mode and can be rebuilt with `obsidian_rebuild_search_index`.
+- The filesystem index is regenerated from authorized files at startup; previous cached note bodies are removed rather than trusted, including when switching to scan mode or narrowing `READ_PATHS`.
+- Watch mode incrementally updates search data after create, change, rename, or delete events. It does not follow symlinks/junctions; ingestion rechecks canonical paths and file identity around reads. These checks reduce replacement races but are not an OS sandbox against a process concurrently changing the filesystem.
+- Index failures degrade to scan mode; use `obsidian_rebuild_search_index` to rebuild. Cached entries that become inaccessible or resolve through a link are removed before search pagination and cache writes.
 
 ## HTTP mode
 
