@@ -44,6 +44,21 @@ const expectedTools = [
 describe("OBS-001 actual MCP contracts", () => {
   beforeEach(async () => { await connect(); });
 
+  it("denies deleting, moving or renaming the vault root through MCP", async () => {
+    const calls = [
+      { name: "obsidian_delete_path", arguments: { path: ".", recursive: true } },
+      { name: "obsidian_move_path", arguments: { source_path: "./", destination_path: "Moved" } },
+      { name: "obsidian_move_path", arguments: { source_path: "Comments.md", destination_path: "." } },
+      { name: "obsidian_rename_path", arguments: { path: ".", new_name: "Renamed" } },
+    ];
+    for (const call of calls) {
+      const result = await client.callTool(call);
+      expect(result.isError).toBe(true);
+      expect(errorText(result.content)).toContain("ACCESS_DENIED");
+      expect(await fixture.bytes("Comments.md")).toEqual(Buffer.from(regressionNotes["Comments.md"]));
+    }
+  });
+
   it("advertises exactly the current 31 tools and their JSON schemas", async () => {
     const list = await client.listTools();
     expect(list.tools.map((tool) => tool.name).sort()).toEqual(expectedTools);
