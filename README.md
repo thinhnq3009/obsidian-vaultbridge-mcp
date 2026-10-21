@@ -35,6 +35,8 @@ The default transport is STDIO. Obsidian, API keys, certificates, and REST endpo
 - All tool paths are vault-relative; absolute, UNC, drive-qualified, traversal, and symlink-escape paths are rejected.
 - `READ_ONLY=true` disables every mutation.
 - `READ_PATHS` and `WRITE_PATHS` restrict operations to comma-separated vault-relative prefixes.
+- In filesystem mode, deleting, moving or renaming the vault root is denied, including `.` and symlink/junction aliases of the root.
+- Filesystem search applies the same `READ_PATHS` policy before reading notes, indexing, returning results and saving its cache. Search excludes symlinks and junctions, including aliases within the vault.
 - Writes use a same-directory temporary file, flush, and atomic rename.
 - Cross-process locks serialize mutations for the same path.
 - Reads return an opaque `sha256:...` revision. Updating an existing note or Canvas requires `expected_revision`; stale revisions return `CONFLICT` instead of overwriting newer data.
@@ -222,7 +224,9 @@ read/patch/write workaround or claim filesystem atomicity for this adapter.
 - `obsidian_read_note_metadata` returns frontmatter, tags and basic stat data without the note body. It also returns headings, link targets and the actual revision when provided by the backend; these fields remain optional for compatibility.
 - Filesystem metadata includes standard link URLs and Obsidian wikilink targets (without aliases or heading anchors). Inline code and code fences are excluded; numeric-only body references such as `#123` and `#6120` are not tags. Supported frontmatter tag forms are preserved.
 - `INDEX_MODE=auto` scans directly below 1,000 Markdown files and uses a persistent MiniSearch index at or above that threshold.
-- Watch mode incrementally updates search data after create, change, rename, or delete events. A damaged index degrades to scan mode and can be rebuilt with `obsidian_rebuild_search_index`.
+- The filesystem index is regenerated from authorized files at startup; previous cached note bodies are removed rather than trusted, including when switching to scan mode or narrowing `READ_PATHS`.
+- Watch mode incrementally updates search data after create, change, rename, or delete events. It does not follow symlinks/junctions; ingestion rechecks canonical paths and file identity around reads. These checks reduce replacement races but are not an OS sandbox against a process concurrently changing the filesystem.
+- Index failures degrade to scan mode; use `obsidian_rebuild_search_index` to rebuild. Cached entries that become inaccessible or resolve through a link are removed before search pagination and cache writes.
 
 ## HTTP mode
 

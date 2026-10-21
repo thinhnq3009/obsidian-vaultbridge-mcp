@@ -58,14 +58,13 @@ describe("OBS-001 filesystem safety", () => {
     expect(await fs.readFile(path.join(fixture.vault, "Private/Secret.md"), "utf8")).toBe("secret");
   });
 
-  it("KNOWN K03: search bypasses readPaths, even though direct read is denied", async () => {
+  it("enforces readPaths for search as well as direct reads", async () => {
     const scoped = new FilesystemVaultBackend({ ...fixture.config, readPaths: ["Public"] });
     await scoped.initialize();
     try {
       await expect(scoped.readNote("Comments.md")).rejects.toMatchObject({ code: "ACCESS_DENIED" });
       const search = await scoped.search({ query: "Body stays", limit: 10 });
-      expect(search.results.map((result) => result.path)).toEqual(["Comments.md"]);
-      expect(search.results[0]?.snippet).toContain("Body stays");
+      expect(search.results).toEqual([]);
     } finally { await scoped.close(); }
   });
 
