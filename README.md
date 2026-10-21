@@ -107,7 +107,7 @@ When Obsidian has exactly one open vault recorded locally, the `--vault` argumen
 
 Core tools retain their existing names:
 
-- Notes: `obsidian_read_note`, `obsidian_read_note_section`, `obsidian_write_note`, `obsidian_append_to_note`, `obsidian_patch_heading`, `obsidian_read_note_metadata`, `obsidian_patch_frontmatter`
+- Notes: `obsidian_read_note`, `obsidian_read_note_section`, `obsidian_apply_note_edits`, `obsidian_write_note`, `obsidian_append_to_note`, `obsidian_patch_heading`, `obsidian_read_note_metadata`, `obsidian_patch_frontmatter`
 - Filesystem: `obsidian_list_files`, `obsidian_create_folder`, `obsidian_tree`, `obsidian_stat_path`, `obsidian_move_path`, `obsidian_rename_path`, `obsidian_delete_path`
 - Search: `obsidian_search`, `obsidian_search_content_advanced`, `obsidian_rebuild_search_index`
 - Canvas: read/create/update/delete plus semantic node and edge tools
@@ -135,6 +135,42 @@ Then replace using the returned revision:
 ```
 
 New paths use `mode: "create"` and do not need a revision.
+
+### Atomic multi-edit of one note (OBS-005)
+
+`obsidian_apply_note_edits` applies several frontmatter updates and heading-section
+edits to **one existing Markdown file** in a single filesystem transaction.
+Provide the revision returned by the most recent read:
+
+```json
+{
+  "path": "Projects/Plan.md",
+  "expected_revision": "sha256:...",
+  "frontmatter_updates": [
+    { "field": "status", "value": "review", "operation": "replace" },
+    { "field": "tags", "value": "ready", "operation": "append" }
+  ],
+  "section_edits": [
+    { "heading": "Progress", "content": "Completed.", "operation": "replace" },
+    { "heading": "Review", "occurrence": 2, "content": "Check CI.", "operation": "append" }
+  ]
+}
+```
+
+Arrays are applied in order (frontmatter first, then sections); entries have
+the same semantics as `obsidian_patch_frontmatter` and `obsidian_patch_heading`.
+`operation` defaults to `replace`; frontmatter `create_if_missing` defaults
+to true. At least one edit is required, with at most 50 entries per array.
+The response includes `path`, `revision`, `frontmatter_edits`, `section_edits`,
+and `changed`. No-op edits preserve existing bytes, timestamp and revision.
+
+All changes are composed in memory under one per-path lock after the revision
+check and committed with at most one atomic rename. Any stale revision, invalid
+YAML, missing/ambiguous heading, protected `agents_edit_at` field, size limit
+or permission failure aborts the entire note update. The server-owned timestamp
+is applied once by the existing final write pipeline. This is **not** a
+multi-file transaction. The deprecated Local REST adapter rejects this tool
+with `UNSUPPORTED_CAPABILITY` rather than risking partial writes.
 
 ### Read a note section
 

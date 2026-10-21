@@ -12,7 +12,7 @@ import { VaultAccessPolicy } from "./accessPolicy.js";
 import { agentEditField, prepareAgentEdit } from "./agentEditTimestamp.js";
 import { parseMetadata, patchFrontmatterContent, patchHeadingContent } from "./markdown.js";
 import { VaultSearchService } from "./search.js";
-import type { BackendCapabilities, BackendStatus, PathStat, SearchQuery, SearchResponse, VaultBackend, WriteOptions } from "./types.js";
+import type { BackendCapabilities, BackendStatus, NoteEdits, NoteEditsResult, PathStat, SearchQuery, SearchResponse, VaultBackend, WriteOptions } from "./types.js";
 
 export class FilesystemVaultBackend implements VaultBackend {
   public readonly capabilities: BackendCapabilities = { activeFile: false, openFile: false, searchIndex: true, filesystem: true };
@@ -200,6 +200,36 @@ export class FilesystemVaultBackend implements VaultBackend {
     const metadata = parseMetadata(note.content);
     const stat = await fs.stat((await this.accessPolicy.resolve(input, "read", true)).absolute);
     return { path: note.path ?? normalizeVaultPathInput(input), ...metadata, stat: { ctime: stat.ctimeMs, mtime: stat.mtimeMs, size: stat.size }, ...(note.revision ? { revision: note.revision } : {}) };
+  }
+
+  public async applyNoteEdits(input: string, expectedRevision: string, edits: NoteEdits): Promise<NoteEditsResult> {
+    if (!input.toLowerCase().endsWith(".md")) throw new VaultError("Atomic note edits require a Markdown (.md) file.", { code: "INVALID_PATH" });
+    if (edits.frontmatter.length + edits.sections.length === 0) throw new VaultError("At least one edit is required.", { code: "INVALID_QUERY" });
+
+    const result = await this.updateTextFile(input, expectedRevision, (current) => {
+      let next = current;
+      for (const edit of edits.frontmatter) {
+        if (!edit.field.trim() || edit.field.split(".").some((part) => !part.trim())) {
+          throw new VaultError("Frontmatter field path must not contain empty segments.", { code: "INVALID_QUERY" });
+        }
+        if (edit.field.split(".")[0] === agentEditField) {
+          throw new VaultError(`${agentEditField} is server-managed.`, { code: "ACCESS_DENIED" });
+        }
+        next = patchFrontmatterContent(next, edit.field, edit.value, edit.operation, edit.createIfMissing);
+      }
+      for (const edit of edits.sections) {
+        next = patchHeadingContent(next, edit.heading, edit.content, edit.operation, edit.occurrence);
+      }
+      return next;
+    }, "Note edits applied successfully.");
+
+    return {
+      ...result,
+      frontmatterEdits: edits.frontmatter.length,
+      sectionEdits: edits.sections.length,
+      changed: result.revision !== expectedRevision,
+      revision: result.revision,
+    };
   }
 
   public async patchHeading(input: string, heading: string, content: string, operation: PatchOperation, options: { occurrence?: number; expectedRevision?: string } = {}) {

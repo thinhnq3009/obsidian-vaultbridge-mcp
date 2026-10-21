@@ -2,6 +2,7 @@ import type { ToolRegistrar } from "./common.js";
 import { registerAddCanvasEdgeTool } from "./addCanvasEdge.js";
 import { registerAddCanvasNodeTool } from "./addCanvasNode.js";
 import { registerAppendToNoteTool } from "./appendToNote.js";
+import { registerApplyNoteEditsTool } from "./applyNoteEdits.js";
 import { registerCreateCanvasTool } from "./createCanvas.js";
 import { registerDeleteCanvasTool } from "./deleteCanvas.js";
 import { registerDeletePathTool } from "./deletePath.js";
@@ -44,6 +45,7 @@ export const toolRegistrars: ToolRegistrar[] = [
   registerUpdateCanvasTool,
   registerDeleteCanvasTool,
   registerAppendToNoteTool,
+  registerApplyNoteEditsTool,
   registerPatchHeadingTool,
   registerPatchFrontmatterTool,
   registerSearchTool,
