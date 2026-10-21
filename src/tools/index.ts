@@ -11,6 +11,7 @@ import { registerMovePathTool } from "./movePath.js";
 import { registerOpenFileTool } from "./openFile.js";
 import { registerPatchFrontmatterTool } from "./patchFrontmatter.js";
 import { registerPatchHeadingTool } from "./patchHeading.js";
+import { registerReadNoteSectionTool } from "./readNoteSection.js";
 import { registerReadNoteTool } from "./readNote.js";
 import { registerReadNoteMetadataTool } from "./readNoteMetadata.js";
 import { registerRenamePathTool } from "./renamePath.js";
@@ -34,6 +35,7 @@ import { registerWriteNotesBulkTool } from "./writeNotesBulk.js";
 export const toolRegistrars: ToolRegistrar[] = [
   registerListFilesTool,
   registerReadNoteTool,
+  registerReadNoteSectionTool,
   registerReadNoteMetadataTool,
   registerReadCanvasTool,
   registerWriteNoteTool,
