@@ -407,3 +407,157 @@ it("blocks queries after a failed persisted rebuild until recovery", async () =>
   await backend.rebuildSearchIndex();
   expect(await paths(backend)).toEqual(["Seed.md"]);
 });
+
+for (const mode of ["scan", "indexed"] as const) {
+  describe(`${mode}: OBS-006 review follow-up`, () => {
+    it.each(["cycle", "broken", "outside"] as const)("F1: ignores a %s symlink event without poisoning healthy search", async (kind) => {
+      const watcher = captureWatcher();
+      const { backend, vault } = await setup(mode, "on");
+      const link = path.join(vault, "Unsafe.md");
+      const target = kind === "cycle" ? link : path.join(path.dirname(vault), kind === "broken" ? "Missing.md" : "Outside.md");
+      if (kind === "outside") await fs.writeFile(target, "forbiddenmarker");
+      await fs.symlink(target, link, "file");
+      watcher().emit("add", link);
+      watcher().emit("change", link);
+      expect(await paths(backend, { query: "unrelated seed", match: "exact" })).toEqual(["Seed.md"]);
+      expect(await paths(backend, { query: "forbiddenmarker", match: "exact" })).toEqual([]);
+      expect((await backend.status()).indexState).toBe(mode === "scan" ? "scan" : "ready");
+    });
+
+    it.each(["realpath", "lstat"] as const)("F1: tolerates ELOOP in %s without accepting that path", async (fault) => {
+      const watcher = captureWatcher();
+      const { backend, vault } = await setup(mode, "on");
+      const target = path.join(vault, "LoopParent/Child.md");
+      await fs.mkdir(path.dirname(target));
+      await fs.writeFile(target, "forbiddenmarker");
+      const realpath = fs.realpath;
+      vi.spyOn(fs, "realpath").mockImplementation(async (...args) => {
+        if (fault === "realpath" && args[0] === target) throw Object.assign(new Error("simulated cycle"), { code: "ELOOP" });
+        return realpath(...args);
+      });
+      const lstat = fs.lstat;
+      vi.spyOn(fs, "lstat").mockImplementation(async (...args) => {
+        if (fault === "lstat" && args[0] === target) throw Object.assign(new Error("simulated parent cycle"), { code: "ELOOP" });
+        return lstat(...args);
+      });
+      watcher().emit("add", target);
+      expect(await paths(backend, { query: "unrelated seed", match: "exact" })).toEqual(["Seed.md"]);
+      expect(await paths(backend, { query: "LoopParent", match: "exact" })).toEqual([]);
+    });
+
+    it("F1: avoids canonicalizing a known non-indexable symlink", async () => {
+      const watcher = captureWatcher();
+      const { backend, vault } = await setup(mode, "on");
+      const link = path.join(vault, "Alias.md");
+      await fs.symlink(path.join(vault, "Seed.md"), link, "file");
+      const realpath = fs.realpath;
+      vi.spyOn(fs, "realpath").mockImplementation(async (...args) => {
+        if (args[0] === link) throw Object.assign(new Error("ineligible link"), { code: "EACCES" });
+        return realpath(...args);
+      });
+      watcher().emit("change", link);
+      expect(await paths(backend, { query: "unrelated seed", match: "exact" })).toEqual(["Seed.md"]);
+    });
+
+    it("F1: still fails closed on a genuine realpath storage error", async () => {
+      const watcher = captureWatcher();
+      const { backend, vault } = await setup(mode, "on");
+      const target = path.join(vault, "Seed.md");
+      const realpath = fs.realpath;
+      vi.spyOn(fs, "realpath").mockImplementation(async (...args) => {
+        if (args[0] === target) throw Object.assign(new Error("storage failure"), { code: "EIO" });
+        return realpath(...args);
+      });
+      watcher().emit("change", target);
+      await expect(backend.search({ limit: 10 })).rejects.toMatchObject({ code: "INDEX_ERROR" });
+      expect((await backend.status()).indexState).toBe("degraded");
+      vi.restoreAllMocks();
+      await backend.rebuildSearchIndex();
+      expect(await paths(backend)).toEqual(["Seed.md"]);
+    });
+
+    it("F3: skips ordinary non-Markdown mutations while retaining Markdown transitions", async () => {
+      const watcher = captureWatcher();
+      const { backend, vault } = await setup(mode, "on");
+      const synchronize = vi.spyOn(VaultSearchService.prototype, "synchronize");
+      const remove = vi.spyOn(fs, "rm");
+      for (const name of ["Board.canvas", "Asset.txt", "image.bin"]) {
+        let file = await backend.writeFile(name, "{} assetmarker");
+        file = await backend.writeFile(name, "{} changedasset", { mode: "replace", expectedRevision: file.revision });
+        await backend.appendToNote(name, " appended", file.revision);
+        watcher().emit("add", path.join(vault, name));
+        watcher().emit("change", path.join(vault, name));
+      }
+      await backend.search({ limit: 10 });
+      expect(synchronize).not.toHaveBeenCalled();
+      expect(remove.mock.calls.filter(([file]) => String(file).endsWith("search-index.json"))).toEqual([]);
+      const note = await backend.writeNote("Transition.MD", "transitionmarker");
+      await backend.movePath(note.path, "Transition.txt", { expectedRevision: note.revision });
+      expect(await paths(backend, { query: "transitionmarker" })).toEqual([]);
+      await backend.movePath("Transition.txt", "Transition.md", { expectedRevision: note.revision });
+      expect(await paths(backend, { query: "transitionmarker" })).toEqual(["Transition.md"]);
+      await backend.movePath("Transition.md", "Folder/Transition.md", { expectedRevision: note.revision });
+      await backend.deletePath("Folder", { recursive: true });
+      expect(await paths(backend, { query: "transitionmarker" })).toEqual([]);
+    });
+  });
+}
+
+for (const mode of ["scan", "indexed"] as const) {
+  it(`${mode}: F2 shares one fresh authorization pass for a simultaneous query burst`, async () => {
+    const { backend } = await setup(mode, "off", 3);
+    const authorization = vi.spyOn(VaultAccessPolicy.prototype, "allowsSearchPath");
+    const queries = Array.from({ length: 50 }, () => backend.search({ query: "unrelated", limit: 10, match: "exact" }));
+    for (const result of await Promise.all(queries)) expect(result.results).toHaveLength(3);
+    expect(authorization).toHaveBeenCalledTimes(3);
+    await backend.search({ query: "unrelated", limit: 10 });
+    expect(authorization).toHaveBeenCalledTimes(6); // No authorization TTL between bursts.
+  });
+
+  it.each(["watcher", "rebuild"] as const)(`${mode}: F2 preserves the %s barrier between query bursts`, async (barrier) => {
+    const watcher = captureWatcher();
+    const { backend, vault } = await setup(mode, "on");
+    await fs.writeFile(path.join(vault, "Seed.md"), "barriernewmarker");
+    const before = backend.search({ query: "unrelated", limit: 10, match: "exact" });
+    const operation = barrier === "rebuild" ? backend.rebuildSearchIndex() : Promise.resolve(watcher().emit("change", path.join(vault, "Seed.md")));
+    const after = backend.search({ query: "barriernewmarker", limit: 10, match: "exact" });
+    expect((await before).results.map((item) => item.path)).toEqual(["Seed.md"]);
+    await operation;
+    expect((await after).results.map((item) => item.path)).toEqual(["Seed.md"]);
+  });
+
+  it(`${mode}: F2 rejects unsafe paths for every batched result and isolates invalid queries`, async () => {
+    const { backend, vault } = await setup(mode, "off");
+    await backend.writeNote("Public/Cached.md", "batchsecretmarker");
+    await backend.rebuildSearchIndex();
+    const outside = path.join(path.dirname(vault), "outside");
+    await fs.mkdir(outside);
+    await fs.rename(path.join(vault, "Public"), path.join(vault, "Old"));
+    await fs.symlink(outside, path.join(vault, "Public"), process.platform === "win32" ? "junction" : "dir");
+    const results = await Promise.allSettled([
+      backend.search({ query: "batchsecretmarker", limit: 10 }),
+      backend.search({ regex: "(a+)+$", limit: 10 }),
+      backend.search({ query: "unrelated", limit: 10 }),
+      backend.search({ query: "batchsecretmarker", match: "exact", limit: 10 }),
+    ]);
+    expect(results[0]).toMatchObject({ status: "fulfilled", value: { results: [] } });
+    expect(results[1]).toMatchObject({ status: "rejected", reason: { code: "INVALID_QUERY" } });
+    expect(results[2]).toMatchObject({ status: "fulfilled", value: { results: [{ path: "Seed.md" }] } });
+    expect(results[3]).toMatchObject({ status: "fulfilled", value: { results: [] } });
+    expect((await backend.status()).indexState).toBe(mode === "scan" ? "scan" : "ready");
+  });
+}
+
+for (const mode of ["scan", "indexed"] as const) {
+  it.each(["Alias", ".obsidian/Alias"])(`${mode}: refreshes a readable canonical target written through unreadable alias %s`, async (alias) => {
+    const { backend, vault } = await setup(mode, "off", 1, { readPaths: ["Real"], writePaths: ["Real", alias] });
+    await backend.createFolder("Real");
+    await fs.mkdir(path.dirname(path.join(vault, alias)), { recursive: true });
+    await fs.symlink(path.join(vault, "Real"), path.join(vault, alias), process.platform === "win32" ? "junction" : "dir");
+    const note = await backend.writeNote(`${alias}/Scoped.md`, "previouscontent");
+    expect(await paths(backend, { query: "previouscontent" })).toEqual(["Real/Scoped.md"]);
+    await backend.writeNote(note.path, "replacementcontent", { mode: "replace", expectedRevision: note.revision });
+    expect(await paths(backend, { query: "replacementcontent" })).toEqual(["Real/Scoped.md"]);
+    expect(await paths(backend, { query: "previouscontent", match: "exact" })).toEqual([]);
+  });
+}

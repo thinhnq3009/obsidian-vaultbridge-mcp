@@ -278,6 +278,7 @@ export class FilesystemVaultBackend implements VaultBackend {
   }
 
   private async synchronizeCommitted(absolutePaths: string[], subtree = false): Promise<void> {
+    if (!subtree && !absolutePaths.some((absolute) => absolute.toLowerCase().endsWith(".md"))) return;
     try {
       await this.searchService!.synchronize(absolutePaths, subtree);
     } catch (error) {

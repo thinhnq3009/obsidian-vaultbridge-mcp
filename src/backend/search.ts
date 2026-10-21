@@ -26,7 +26,14 @@ type PersistedIndex = {
   savedAt: string;
 };
 
+type SearchRequest = {
+  query: SearchQuery;
+  resolve: (response: SearchResponse) => void;
+  reject: (error: unknown) => void;
+};
+
 const INDEX_FILE = "search-index.json";
+const MAX_SEARCH_BATCH = 50;
 
 export class VaultSearchService {
   private readonly documents = new Map<string, SearchDocument>();
@@ -42,6 +49,7 @@ export class VaultSearchService {
   private operationChain: Promise<unknown> = Promise.resolve();
   private consistencyError: string | undefined;
   private cacheDirty = false;
+  private searchBatch: SearchRequest[] | undefined;
 
   public constructor(
     private readonly vaultRoot: string,
@@ -80,6 +88,7 @@ export class VaultSearchService {
   }
 
   public rebuild(): Promise<{ indexedFiles: number; mode: string }> {
+    this.searchBatch = undefined;
     return this.enqueue(async () => {
       try {
         const result = await this.rebuildNow();
@@ -103,14 +112,30 @@ export class VaultSearchService {
   }
 
   public search(query: SearchQuery): Promise<SearchResponse> {
-    return this.enqueue(async () => {
-      if (this.consistencyError) throw new VaultError(`Search index is unavailable: ${this.consistencyError}. Rebuild the search index before searching.`, { code: "INDEX_ERROR" });
-      return this.searchNow(query);
+    return new Promise<SearchResponse>((resolve, reject) => {
+      const request = { query, resolve, reject };
+      if (this.searchBatch && this.searchBatch.length < MAX_SEARCH_BATCH) {
+        this.searchBatch.push(request);
+        return;
+      }
+      const batch = [request];
+      this.searchBatch = batch;
+      void this.enqueue(async () => {
+        // Seal before authorization starts: later arrivals need a fresh pass.
+        if (this.searchBatch === batch) this.searchBatch = undefined;
+        if (this.consistencyError) throw new VaultError(`Search index is unavailable: ${this.consistencyError}. Rebuild the search index before searching.`, { code: "INDEX_ERROR" });
+        if (await this.pruneUnauthorized() && this.effectiveMode === "indexed") await this.persist();
+        // One authorized snapshot, no await between projections. Mutation and
+        // rebuild calls seal the batch, so no query crosses their queue barrier.
+        for (const pending of batch) {
+          try { pending.resolve(this.searchNow(pending.query)); }
+          catch (error) { pending.reject(error); }
+        }
+      }).catch((error: unknown) => { for (const pending of batch) pending.reject(error); });
     });
   }
 
-  private async searchNow(query: SearchQuery): Promise<SearchResponse> {
-    if (await this.pruneUnauthorized() && this.effectiveMode === "indexed") await this.persist();
+  private searchNow(query: SearchQuery): SearchResponse {
     const offset = decodeCursor(query.cursor);
     const exact = query.match === "exact" || query.caseSensitive === true;
     let results = this.effectiveMode === "indexed" && !exact && query.query?.trim()
@@ -152,6 +177,7 @@ export class VaultSearchService {
 
   /** Reconcile committed mutations (under their lock) and watcher paths. */
   public synchronize(absolutePaths: string[], subtree = false): Promise<void> {
+    this.searchBatch = undefined;
     return this.enqueue(async () => {
       try {
         if (this.consistencyError) throw new VaultError("Search index requires a successful rebuild.", { code: "INDEX_ERROR" });
@@ -165,8 +191,11 @@ export class VaultSearchService {
         // Reconcile canonical targets too when writes use an allowed in-vault
         // directory alias. Search continues to exclude the alias itself.
         for (const absolute of absolutePaths) {
-          try { affected.add(await fs.realpath(absolute)); }
-          catch (error) { if (!isMissing(error)) throw error; }
+          try {
+            // Final-component links are never indexable. Parent aliases still
+            // resolve so committed writes refresh their canonical note target.
+            if (!(await fs.lstat(absolute)).isSymbolicLink()) affected.add(await fs.realpath(absolute));
+          } catch (error) { if (!isUnavailablePath(error)) throw error; }
         }
         for (const absolute of affected) await this.reconcile(absolute, subtree);
       } catch (error) {
@@ -194,7 +223,7 @@ export class VaultSearchService {
     try {
       stat = await fs.lstat(absolute);
     } catch (error) {
-      if (!isMissing(error)) throw error;
+      if (!isUnavailablePath(error)) throw error;
     }
     // Remove stale descendants even when a directory disappeared or became a
     // file/link. A file edit only updates that one ID; no vault walk or rebuild.
@@ -301,7 +330,7 @@ export class VaultSearchService {
     } catch (error) {
       // A missing path/link can race with a commit. Unexpected read/index errors
       // must reach synchronize; success must never conceal a stale snapshot.
-      if (!isMissing(error) && !(error instanceof Error && "code" in error && error.code === "ELOOP")) throw error;
+      if (!isUnavailablePath(error)) throw error;
       this.remove(absolutePath);
     }
   }
@@ -340,9 +369,12 @@ export class VaultSearchService {
       const pending = operation.catch(degrade).finally(() => { this.pendingEvents.delete(pending); });
       this.pendingEvents.add(pending);
     };
-    this.watcher.on("add", (file) => { track(this.synchronize([file])); });
-    this.watcher.on("change", (file) => { track(this.synchronize([file])); });
-    this.watcher.on("unlink", (file) => { track(this.synchronize([file])); });
+    const refreshFile = (file: string) => {
+      if (file.toLowerCase().endsWith(".md")) track(this.synchronize([file]));
+    };
+    this.watcher.on("add", refreshFile);
+    this.watcher.on("change", refreshFile);
+    this.watcher.on("unlink", refreshFile);
     this.watcher.on("unlinkDir", (directory) => { track(this.synchronize([directory], true)); });
     this.watcher.on("error", degrade);
     await new Promise<void>((resolve) => {
@@ -435,4 +467,8 @@ function isUnsafeRegex(value: string): boolean {
 
 function isMissing(error: unknown): boolean {
   return error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR");
+}
+
+function isUnavailablePath(error: unknown): boolean {
+  return isMissing(error) || (error instanceof Error && "code" in error && error.code === "ELOOP");
 }
