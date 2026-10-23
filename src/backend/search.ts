@@ -10,6 +10,7 @@ import type { IndexMode, WatchMode } from "../types.js";
 import { VaultError } from "../types.js";
 import type { VaultAccessPolicy } from "./accessPolicy.js";
 import { parseMetadata } from "./markdown.js";
+import { matchRegex } from "./regex.js";
 import type { SearchQuery, SearchResponse } from "./types.js";
 
 type SearchDocument = {
@@ -125,25 +126,23 @@ export class VaultSearchService {
         if (this.searchBatch === batch) this.searchBatch = undefined;
         if (this.consistencyError) throw new VaultError(`Search index is unavailable: ${this.consistencyError}. Rebuild the search index before searching.`, { code: "INDEX_ERROR" });
         if (await this.pruneUnauthorized() && this.effectiveMode === "indexed") await this.persist();
-        // One authorized snapshot, no await between projections. Mutation and
-        // rebuild calls seal the batch, so no query crosses their queue barrier.
+        // Hold the operation queue while regex workers run against this snapshot.
+        // Mutations/rebuilds seal the batch and cannot interleave with projections.
         for (const pending of batch) {
-          try { pending.resolve(this.searchNow(pending.query)); }
+          try { pending.resolve(await this.searchNow(pending.query)); }
           catch (error) { pending.reject(error); }
         }
       }).catch((error: unknown) => { for (const pending of batch) pending.reject(error); });
     });
   }
 
-  private searchNow(query: SearchQuery): SearchResponse {
+  private async searchNow(query: SearchQuery): Promise<SearchResponse> {
     const offset = decodeCursor(query.cursor);
     const exact = query.match === "exact" || query.caseSensitive === true;
     let results = this.effectiveMode === "indexed" && !exact && query.query?.trim()
       ? this.miniSearch.search(query.query, { prefix: true, fuzzy: 0.2 }).map((result) => ({ document: this.documents.get(String(result.id)), score: result.score }))
       : [...this.documents.values()].map((document) => ({ document, score: 1 }));
 
-    if (query.regex && isUnsafeRegex(query.regex)) throw new VaultError("Regular expression is too complex or unsafe.", { code: "INVALID_QUERY" });
-    const regex = query.regex ? new RegExp(query.regex, query.caseSensitive ? "u" : "iu") : undefined;
     const needle = query.query?.trim();
     results = results.filter((candidate) => {
       const document = candidate.document;
@@ -151,13 +150,20 @@ export class VaultSearchService {
       if (query.folder && !(document.path === query.folder || document.path.startsWith(`${query.folder.replace(/\/$/u, "")}/`))) return false;
       if (query.tag && !document.tags.includes(query.tag.replace(/^#/u, ""))) return false;
       if (query.frontmatter && !Object.entries(query.frontmatter).every(([key, value]) => deepEqual(document.frontmatter[key], value))) return false;
-      if (regex && !regex.test(document.content)) return false;
       if (needle && (this.effectiveMode === "scan" || exact)) {
         const haystack = `${document.path}\n${document.content}`;
         if (query.caseSensitive ? !haystack.includes(needle) : !haystack.toLowerCase().includes(needle.toLowerCase())) return false;
       }
       return true;
     });
+
+    if (query.regex) {
+      const matches = await matchRegex(query.regex, query.caseSensitive === true, results.map((candidate) => candidate.document!.content));
+      // External filesystem changes can revoke access while the worker runs.
+      // Recheck before publishing captured bodies/snippets or serving the batch.
+      if (await this.pruneUnauthorized() && this.effectiveMode === "indexed") await this.persist();
+      results = results.filter((candidate, index) => matches.has(index) && this.documents.has(candidate.document!.path));
+    }
 
     if (query.sort === "path") results.sort((left, right) => left.document!.path.localeCompare(right.document!.path));
     else results.sort((left, right) => right.score - left.score || left.document!.path.localeCompare(right.document!.path));
@@ -466,12 +472,6 @@ function toVaultPath(value: string): string {
 
 function deepEqual(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
-}
-
-function isUnsafeRegex(value: string): boolean {
-  if (value.length > 256) return true;
-  if (/\\[1-9]|\(\?<([=!])|\(\?<[A-Za-z]/u.test(value)) return true;
-  return /\([^)]*[+*][^)]*\)[+*{]/u.test(value);
 }
 
 function isMissing(error: unknown): boolean {
