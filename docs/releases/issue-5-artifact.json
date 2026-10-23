@@ -1,0 +1,56 @@
+{
+  "observed_date": "2026-10-24",
+  "repository": "https://github.com/thinhnq3009/obsidian-vaultbridge-mcp",
+  "branch": "codex/issue-5-release-hygiene",
+  "source_base": "3c296b83f842831d680c386231d7350f09b3e405",
+  "source_revision": "Use the commit containing this record; no generated or untracked application source is required.",
+  "candidate": {
+    "name": "obsidian-vaultbridge-mcp",
+    "version": "0.1.0-alpha.1",
+    "filename": "obsidian-vaultbridge-mcp-0.1.0-alpha.1.tgz",
+    "size": 94349,
+    "unpackedSize": 469460,
+    "shasum": "2a21b2421d883f9fe1efe668a13dd4839d107a4f",
+    "integrity": "sha512-JL0OD8Tol30WIPhIzheZREpmFOv3nvWJ4mCEfstt9rjea3SkEsFETIHoK2RkmaBnxbuYSWfM36L0JgwCG6Eclg==",
+    "entryCount": 156
+  },
+  "repeated_clean_pack_and_dry_run_integrity_match": true,
+  "checks": {
+    "npm_ci": "passed (Node 20.20.2, final lockfile)",
+    "production_build": "passed (Node 20.20.2 / 22.23.4)",
+    "lint": "passed",
+    "diff_check": "passed",
+    "full_suite": {
+      "node": "20.20.2",
+      "suites": 18,
+      "passed": 416,
+      "failed": 0,
+      "coverage": "V8"
+    },
+    "installed_tarball_npx_smoke": {
+      "node_versions": [
+        "20.20.2",
+        "22.23.4"
+      ],
+      "executables": [
+        "obsidian-vaultbridge-mcp",
+        "obsidian-local-rest-mcp"
+      ],
+      "result": "passed: initialize/list/create/read/replace/stale conflict; same candidate tarball"
+    },
+    "full_dependency_audit": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 0
+    },
+    "production_audit": "passed in workspace and installed consumers",
+    "optional_full_project_typecheck": "9 existing test-only diagnostics, identical on unmodified source baseline with the same final dependencies"
+  },
+  "publication": "not performed; alpha/latest remain 0.1.0-alpha.0 at registry verification",
+  "remote_ci": "pending review/push; no remote CI result claimed",
+  "published_alpha_1_smoke": "pending intentional publication",
+  "published_alpha_0_provenance": "no gitHead or attestation; 137/138 rebuilt dist files match 1edecc0, remaining difference is MCP name/version"
+}

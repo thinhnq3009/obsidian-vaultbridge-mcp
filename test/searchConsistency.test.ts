@@ -304,6 +304,8 @@ it("reports cache invalidation failure after commit and can recover through rebu
   expect(await paths(backend, { query: "committedmarker" })).toEqual(["Committed.md"]);
 });
 
+// Fixture creation/indexing touches 1,000 files under coverage. Keep the edit's
+// filesystem-call assertions strict, but allow slower CI workers time to set up.
 it.each([10, 1000])("performance smoke: edits one note without scanning a %i-note auto vault", async (count) => {
   const { backend, vault } = await setup("auto", "off", count);
   expect((await backend.status()).indexState).toBe(count < 1000 ? "scan" : "ready");
@@ -318,7 +320,7 @@ it.each([10, 1000])("performance smoke: edits one note without scanning a %i-not
   expect(open.mock.calls).toHaveLength(2); // One atomic temp write, one index read.
   process.stdout.write(`OBS-006 perf: vault=${count}, refreshed=1, directoryReads=0, indexBodyReads=1, editMs=${elapsedMs.toFixed(2)}\n`);
   expect(await paths(backend, { query: "performancemarker" })).toEqual(["Seed.md"]);
-});
+}, 20_000);
 
 it("keeps auto mode stable across the 1000-note boundary until an explicit rebuild", async () => {
   const { backend } = await setup("auto", "off", 999);
@@ -329,7 +331,7 @@ it("keeps auto mode stable across the 1000-note boundary until an explicit rebui
   await backend.deletePath("Boundary.md", { expectedRevision: (await backend.readNote("Boundary.md")).revision! });
   expect((await backend.status()).indexState).toBe("ready");
   expect(await paths(backend, { query: "boundarymarker" })).toEqual([]);
-});
+}, 20_000);
 
 it.each(["move", "delete"] as const)("reports a committed %s when cache invalidation fails", async (operation) => {
   const { backend } = await setup("indexed", "off");

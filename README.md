@@ -1,8 +1,12 @@
-# obsidian-local-rest-mcp
+# Obsidian VaultBridge MCP
 
-Standalone MCP server for safely reading, writing, searching, and managing an Obsidian vault directly through the filesystem. Obsidian and the Local REST API plugin do not need to be installed or running.
+Standalone MCP server for reading, writing, searching, and managing an Obsidian vault directly through the filesystem. Obsidian and the Local REST API plugin do not need to be installed or running.
 
-Version 1.0 is standalone-first. The former Local REST integration remains available as a deprecated migration backend for this major version.
+> **Early preview: `0.1.0-alpha.1` (release candidate, not yet published).** Use a disposable, non-sensitive test vault. This is a prerelease, not a production-safety or stable-release claim. Local REST policy enforcement, protected paths, regex execution limits, cache permissions, HTTP hardening and runtime security review remain open. See [release gates](./RELEASING.md).
+
+[![CI](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/workflows/ci.yml)
+
+The filesystem backend is standalone-first. The former Local REST integration remains a deprecated migration adapter. The npm package is now `obsidian-vaultbridge-mcp`; see [migration and executable compatibility](./MIGRATION.md).
 
 ## Requirements
 
@@ -12,25 +16,29 @@ Version 1.0 is standalone-first. The former Local REST integration remains avail
 ## Quick start
 
 ```bash
-npx obsidian-local-rest-mcp
+npx obsidian-vaultbridge-mcp@alpha
 ```
 
 The server auto-detects a single open Obsidian vault from Obsidian's local registry. If detection is ambiguous, pass the vault explicitly:
 
 ```bash
-npx obsidian-local-rest-mcp --vault "C:/Users/me/Documents/My Vault"
+npx obsidian-vaultbridge-mcp@alpha --vault "C:/Users/me/Documents/My Vault"
 ```
 
 Environment equivalent override:
 
 ```bash
 VAULT_PATH=C:/Users/me/Documents/My Vault
-npx obsidian-local-rest-mcp
+npx obsidian-vaultbridge-mcp@alpha
 ```
+
+As verified on 2026-10-24, the `alpha` tag serves `0.1.0-alpha.0`; these commands will pick up the next prerelease only after intentional publication. For a fixed version, replace `@alpha` with the version you reviewed.
 
 The default transport is STDIO. Obsidian, API keys, certificates, and REST endpoints are not required.
 
-## Safety model
+## Filesystem safety model
+
+These controls describe filesystem mode only. The deprecated Local REST adapter does not enforce the same path scopes or revision preconditions, and its backend status can misreport read-only mode ([#17](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/17)). Do not rely on it for restricted access.
 
 - All tool paths are vault-relative; absolute, UNC, drive-qualified, traversal, and symlink-escape paths are rejected.
 - `READ_ONLY=true` disables every mutation.
@@ -83,7 +91,7 @@ CLI arguments override `.env` and environment values:
 [mcp_servers.obsidian_vault]
 enabled = true
 command = "npx"
-args = ["-y", "obsidian-local-rest-mcp", "--vault", "C:/Users/me/Documents/My Vault"]
+args = ["-y", "obsidian-vaultbridge-mcp@alpha", "--vault", "C:/Users/me/Documents/My Vault"]
 ```
 
 When Obsidian has exactly one open vault recorded locally, the `--vault` argument can be omitted.
@@ -95,7 +103,7 @@ When Obsidian has exactly one open vault recorded locally, the `--vault` argumen
   "mcpServers": {
     "obsidian-vault": {
       "command": "npx",
-      "args": ["-y", "obsidian-local-rest-mcp", "--vault", "C:/Users/me/Documents/My Vault"]
+      "args": ["-y", "obsidian-vaultbridge-mcp@alpha", "--vault", "C:/Users/me/Documents/My Vault"]
     }
   }
 }
@@ -113,7 +121,7 @@ Core tools retain their existing names:
 - Canvas: read/create/update/delete plus semantic node and edge tools
 - Diagnostics: `obsidian_backend_status`, `obsidian_vault_health`
 
-`obsidian_get_active_file` and `obsidian_open_file` are exposed only by a backend with an active Obsidian runtime integration. They are intentionally absent in standalone mode.
+`obsidian_get_active_file` and `obsidian_open_file` are listed for compatibility but return errors in filesystem mode. They work only with an active Obsidian Local REST runtime. Their presence in the tool list does not imply standalone support.
 
 ### Safe update example
 
@@ -244,7 +252,7 @@ Malformed/unclosed YAML, non-mapping frontmatter and anchors, tags, collections 
 block scalars on the reserved field are rejected without writing. Repair such
 frontmatter outside MCP first. Canvas/assets and move/delete operations do not
 receive timestamps. Bulk writes retain sequential partial success; they are not
-cross-file transactions. See [the write-path audit](docs/OBS-003-write-audit.md).
+cross-file transactions. See [the write-path audit](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/blob/main/docs/OBS-003-write-audit.md).
 
 The deprecated Local REST adapter does **not** implement this feature: its HTTP
 forwarding has no shared locked transaction or reliable revision precondition.
@@ -272,13 +280,13 @@ read/patch/write workaround or claim filesystem atomicity for this adapter.
 ## HTTP mode
 
 ```bash
-npx obsidian-local-rest-mcp --vault "C:/Vault" --http
+npx obsidian-vaultbridge-mcp@alpha --vault "C:/Vault" --http
 ```
 
 Binding to a non-loopback host requires authentication:
 
 ```bash
-npx obsidian-local-rest-mcp --vault "C:/Vault" --http --host 0.0.0.0 --auth-token "replace-with-a-secret"
+npx obsidian-vaultbridge-mcp@alpha --vault "C:/Vault" --http --host 0.0.0.0 --auth-token "replace-with-a-secret"
 ```
 
 Clients must send `Authorization: Bearer <token>`.
@@ -286,20 +294,28 @@ Clients must send `Authorization: Bearer <token>`.
 ## Local REST migration backend
 
 ```bash
-npx obsidian-local-rest-mcp \
+npx obsidian-vaultbridge-mcp@alpha \
   --backend local-rest \
   --api-key "your-key" \
   --base-url "https://127.0.0.1:27124"
 ```
 
-This backend exists for migration only and is planned for removal after the 1.x line. See [MIGRATION.md](./MIGRATION.md).
+This backend exists for migration only; its removal schedule has not been agreed. It is unsuitable for enforcing access restrictions. See [MIGRATION.md](./MIGRATION.md).
 
-## Development
+## Tests and development
+
+The [test suite](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/tree/main/test) uses Vitest with V8 coverage. It exercises filesystem/revision safety, Markdown/YAML, search scopes and freshness, Canvas, MCP STDIO/HTTP, and known compatibility-adapter limitations. Tests use temporary synthetic vaults. Passing characterization tests for a known limitation do not mean that limitation is fixed.
+
+[CI](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/workflows/ci.yml) runs on Ubuntu, macOS and Windows with Node 20/22. It builds, tests, lints, audits production dependencies, checks the pack manifest and installs an actual tarball into a separate consumer for an `npx` MCP smoke test of both executable names. Tests stay in GitHub and are not shipped in the npm tarball.
 
 ```bash
-npm install
+npm ci
 npm run build
 npm test
 npm run lint
 npm pack --dry-run
+npm run smoke:package
+npm audit --omit=dev --audit-level=high
 ```
+
+See [RELEASING.md](./RELEASING.md) for source/artifact evidence, remaining gates and manual prerelease steps. npm.io is a third-party index; its test indicator and score are not a substitute for the linked test/CI evidence.

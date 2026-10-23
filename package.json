@@ -1,7 +1,7 @@
 {
-  "name": "obsidian-local-rest-mcp",
-  "version": "1.0.0",
-  "description": "Standalone MCP server for safely reading, writing, searching, and managing Obsidian vaults directly through the filesystem.",
+  "name": "obsidian-vaultbridge-mcp",
+  "version": "0.1.0-alpha.1",
+  "description": "Connect AI agents to your Obsidian vault through MCP. Early preview with a standalone filesystem backend.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -12,6 +12,7 @@
     }
   },
   "bin": {
+    "obsidian-vaultbridge-mcp": "./dist/index.js",
     "obsidian-local-rest-mcp": "./dist/index.js"
   },
   "files": [
@@ -19,19 +20,21 @@
     "README.md",
     "MIGRATION.md",
     "CHANGELOG.md",
-    ".env.example"
+    ".env.example",
+    "RELEASING.md"
   ],
   "engines": {
     "node": ">=20.11.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json",
     "dev": "tsx watch --clear-screen=false src/index.ts",
     "start": "node dist/index.js",
     "prepack": "npm run build",
-    "prepublishOnly": "npm run lint && npm test",
+    "prepublishOnly": "npm run lint && npm test && npm run smoke:package && npm audit --omit=dev --audit-level=high",
     "lint": "eslint .",
-    "test": "vitest run --coverage"
+    "test": "vitest run --coverage",
+    "smoke:package": "tsx scripts/smoke-package.ts"
   },
   "keywords": [
     "codex",
@@ -42,18 +45,18 @@
     "vault",
     "typescript"
   ],
-  "author": "",
+  "author": "thinhnq",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/thinhnq3009/obsidian-local-rest-mcp.git"
+    "url": "git+https://github.com/thinhnq3009/obsidian-vaultbridge-mcp.git"
   },
-  "homepage": "https://github.com/thinhnq3009/obsidian-local-rest-mcp#readme",
+  "homepage": "https://github.com/thinhnq3009/obsidian-vaultbridge-mcp#readme",
   "bugs": {
-    "url": "https://github.com/thinhnq3009/obsidian-local-rest-mcp/issues"
+    "url": "https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.32.0",
     "chokidar": "^4.0.3",
     "mdast-util-to-string": "^4.0.0",
     "minisearch": "^7.2.0",
@@ -70,11 +73,15 @@
     "@types/express": "^5.0.6",
     "@types/node": "^24.7.2",
     "@types/proper-lockfile": "^4.1.4",
-    "@vitest/coverage-v8": "^4.1.4",
+    "@vitest/coverage-v8": "^4.1.12",
     "eslint": "^10.2.0",
-    "tsx": "^4.21.0",
+    "tsx": "^4.23.15",
     "typescript": "^6.0.2",
     "typescript-eslint": "^8.58.1",
-    "vitest": "^4.1.4"
+    "vitest": "^4.1.12"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "alpha"
   }
 }
