@@ -90,7 +90,10 @@ publish, deployment, auto-merge or source data-format migration is performed.
 Use `npm ci`, `npm run build`, `npm run lint`, `npm test -- --maxWorkers=2`,
 `npm audit --omit=dev --audit-level=high`, `npm audit --audit-level=high`,
 `npm pack --dry-run` and `npm run smoke:package`. Full-suite and exact PR CI
-results are recorded in the PR description after synchronization. All tests use
+results are recorded in [PR #27](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/pull/27).
+Local clean-lock verification on Node v24.22.1 passed 488 tests across 22 files,
+build/lint, packed-tarball smoke for both executables and both audit commands
+with zero findings. CI and CodeQL links in the PR refer to the reviewed head. All tests use
 disposable synthetic vaults; regex adversarial probes have child-process kill
 deadlines, benign Brotli input only is used for transport checks.
 

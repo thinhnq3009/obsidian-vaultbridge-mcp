@@ -77,7 +77,7 @@ or index refresh time is promised.
 | #4: YAML integer precision | Closed with lossless comparison; `test/agentEditTimestamp.test.ts` covers adjacent unsafe integers, no-op controls, integral floats and key collisions (#8/#9). |
 | K06: Local REST enforcement | Implemented in this security branch (#17): read-only/scopes enforced before forwarding; remote search/active-file and atomic/revision promises fail closed. Canonical symlink checks require filesystem mode. |
 | Other known safety work | #16 merged through PR #24. This branch implements #14, #18, #19 and #20 plus source/runtime remediation for #23. Deployment inventories, Windows ACL checks, green CI/review and owner approval are release gates. |
-| Dependency advisories | Baseline production audit found 8 affected packages (1 critical, 3 high, 3 moderate, 1 low). Resolutions are refreshed within existing semver ranges; the SDK minimum is raised to 1.32.0; Vitest/coverage to 4.1.12 and tsx to 4.23.15 resolve the tooling advisories. Audit the reviewed lockfile and installed artifact before publishing. Audit success is not an exploitability or overall safety guarantee. |
+| Dependency advisories | Baseline production audit found 8 affected packages (1 critical, 3 high, 3 moderate, 1 low). Resolutions are refreshed within existing semver ranges; the SDK minimum is raised to 1.32.2; Vitest/coverage to 4.1.12 and tsx to 4.23.15 resolve the tooling advisories. Audit the reviewed lockfile and installed artifact before publishing. Audit success is not an exploitability or overall safety guarantee. |
 
 The README scopes its controls to filesystem mode. An alpha is for disposable
 pilot data; a production-safe or stable claim requires closing the above gates,
