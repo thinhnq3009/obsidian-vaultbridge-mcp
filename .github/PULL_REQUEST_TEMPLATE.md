@@ -6,7 +6,7 @@
 
 <!-- Replace this line with ONE plain-text declaration:
 Refs #ISSUE_NUMBER      — partial work; do not close the issue
-Closes #ISSUE_NUMBER    — full issue completed; auto-close on merge into main
+Closes #ISSUE_NUMBER    — full issue completed; auto-close on merge into develop
 No issue: <reason>      — standalone housekeeping
 
 Use an actual issue number instead of ISSUE_NUMBER. Do not use a closing keyword
