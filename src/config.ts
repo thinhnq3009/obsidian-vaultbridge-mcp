@@ -37,6 +37,7 @@ const envSchema = z.object({
   MCP_HTTP_PORT: z.preprocess((value) => value ?? DEFAULT_MCP_HTTP_PORT, z.coerce.number().int().min(1).max(65_535)),
   MCP_HTTP_PATH: z.preprocess((value) => value ?? "/mcp", z.string().trim().min(1).refine((value) => value.startsWith("/"), "MCP_HTTP_PATH must start with /")),
   MCP_ALLOWED_HOSTS: z.string().optional(),
+  MCP_HTTP_TLS_PROXY: booleanString(false),
   MCP_AUTH_TOKEN: z.string().trim().optional(),
 });
 
@@ -59,7 +60,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env, argv: string
   if (data.BACKEND === "local-rest" && !data.OBSIDIAN_API_KEY) throw new Error("Invalid Local REST configuration: OBSIDIAN_API_KEY is required");
   if (!isLoopbackHost(data.MCP_HTTP_HOST) && !data.MCP_AUTH_TOKEN) throw new Error("MCP_AUTH_TOKEN is required when MCP_HTTP_HOST is not loopback");
 
-  return {
+  const config: AppConfig = {
     backend: data.BACKEND,
     ...(vaultPath ? { vaultPath: path.resolve(vaultPath) } : {}),
     readOnly: data.READ_ONLY,
@@ -80,11 +81,14 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env, argv: string
     mcpTransport: data.MCP_TRANSPORT,
     colorfulLogs: data.COLORFUL_LOGS,
     mcpHttpHost: data.MCP_HTTP_HOST,
+    mcpHttpTlsProxy: data.MCP_HTTP_TLS_PROXY,
     mcpHttpPort: data.MCP_HTTP_PORT,
     mcpHttpPath: data.MCP_HTTP_PATH.replace(/\/+$/u, "") || "/",
     ...(splitList(data.MCP_ALLOWED_HOSTS).length > 0 ? { mcpAllowedHosts: splitList(data.MCP_ALLOWED_HOSTS) } : {}),
     ...(data.MCP_AUTH_TOKEN ? { mcpAuthToken: data.MCP_AUTH_TOKEN } : {}),
   };
+  if (config.mcpTransport === "http") validateHttpDeployment(config);
+  return config;
 }
 
 function resolveFilesystemVaultPath(configuredPath: string | undefined, environment: Record<string, string | undefined>): string | undefined {
@@ -191,4 +195,12 @@ function splitList(value: string | undefined): string[] {
 
 function isLoopbackHost(host: string): boolean {
   return host === "127.0.0.1" || host === "localhost" || host === "::1";
+}
+
+export function validateHttpDeployment(config: AppConfig): void {
+  if (!isLoopbackHost(config.mcpHttpHost)) {
+    if (!config.mcpHttpTlsProxy) throw new Error("Network HTTP requires TLS termination at a trusted proxy and MCP_HTTP_TLS_PROXY=true.");
+    if (!config.mcpAuthToken) throw new Error("Network HTTP requires MCP_AUTH_TOKEN.");
+    if (!config.mcpAllowedHosts?.length) throw new Error("Network HTTP requires an explicit MCP_ALLOWED_HOSTS allowlist.");
+  }
 }

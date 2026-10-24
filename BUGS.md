@@ -4,7 +4,7 @@ The stable Local REST failures previously recorded here no longer affect the def
 
 ## Release safety gates
 
-See [RELEASING.md](./RELEASING.md) for unresolved protected-path, regex, Local REST, cache, HTTP and runtime-security gates. K03 (search read scopes), K04 (search freshness) and issue #4 (YAML precision) have regression coverage on current main. K06 (Local REST enforcement) remains open as issue #17. Do not infer safety from passing tests that characterize known defects.
+See [RELEASING.md](./RELEASING.md) for remaining deployment and release gates. K03 (search read scopes), K04 (search freshness), issue #4 (YAML precision) and #16 (bounded regex) have regression coverage on current main. This branch adds K06 Local REST enforcement (#17), protected paths, private cache, HTTP and runtime gates. Deployment runtime inventories and Windows cache ACL verification remain operator responsibilities.
 
 ## Compatibility backend
 

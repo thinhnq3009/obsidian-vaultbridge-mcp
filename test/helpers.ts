@@ -33,5 +33,5 @@ export function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
 }
 
 export async function createTempVault(): Promise<string> {
-  return fs.mkdtemp(path.join(os.tmpdir(), "obsidian-vault-mcp-"));
+  return fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "obsidian-vault-mcp-")));
 }

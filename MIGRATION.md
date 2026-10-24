@@ -37,8 +37,18 @@ VAULT_PATH=C:/Users/me/Documents/My Vault
 
 ## Runtime-only tools
 
-`obsidian_get_active_file` and `obsidian_open_file` remain listed for compatibility, but return errors in filesystem mode because there is no running Obsidian UI. Use them only with the deprecated Local REST backend.
+`obsidian_get_active_file` and `obsidian_open_file` remain listed for compatibility, but return errors in filesystem mode because there is no running Obsidian UI. Only `obsidian_open_file` remains supported by the deprecated Local REST backend; active-file reads cannot be authorized before fetching their body.
 
 ## Temporary compatibility mode
 
-Set `BACKEND=local-rest` and retain the old API settings to migrate incrementally. Local REST compatibility is deprecated; its removal schedule is undecided. It does not enforce filesystem safety guarantees (READ_ONLY/path scope/revision policy is still incomplete). Use only disposable, non-sensitive test data. Production/stable use remains blocked; see [RELEASING.md](./RELEASING.md).
+Set `BACKEND=local-rest` and retain the old API settings to migrate incrementally. Local REST compatibility is deprecated; its removal schedule is undecided. It enforces READ_ONLY and lexical path scopes; canonical symlink and revision guarantees require the filesystem backend. Use only disposable, non-sensitive test data. Production/stable use remains blocked; see [RELEASING.md](./RELEASING.md).
+
+Local REST now enforces `READ_ONLY`, read/write scopes and protected paths before
+forwarding. Search and active-file reads return `UNSUPPORTED_CAPABILITY` because
+the adapter cannot authorize them before remote note processing. Atomic moves,
+recursive/folder deletion, create/replace modes, revision-checked writes and
+occurrence-specific patches are also unsupported instead of silently ignoring
+guarantees. Direct authorized reads, metadata, listing, open-file and legacy
+writes without those options remain available. Remote filesystem canonicalization
+is controlled by the Obsidian plugin; use the filesystem backend for canonical
+symlink containment and the complete safety contract.

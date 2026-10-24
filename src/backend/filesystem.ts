@@ -66,7 +66,7 @@ export class FilesystemVaultBackend implements VaultBackend {
       if (!this.config.readOnly) {
         const probe = path.join(this.config.cacheDir, `.health-${process.pid}`);
         await fs.mkdir(this.config.cacheDir, { recursive: true });
-        await fs.writeFile(probe, "ok", "utf8");
+        await fs.writeFile(probe, "ok", { encoding: "utf8", mode: 0o600, flag: "wx" });
         await fs.unlink(probe);
         checks.cache = "writable";
       }
@@ -83,7 +83,18 @@ export class FilesystemVaultBackend implements VaultBackend {
     if (entries.length > this.config.maxTreeEntries) throw new VaultError("Directory entry limit exceeded.", { code: "FILE_TOO_LARGE" });
     return {
       root: resolved.relative,
-      entries: entries.map((entry) => ({ path: joinVaultPath(resolved.relative, entry.name), name: entry.name, isFolder: entry.isDirectory() })),
+      entries: (await Promise.all(entries.map(async (entry) => {
+        const relative = joinVaultPath(resolved.relative, entry.name);
+        try { await this.accessPolicy.resolve(relative, "read", true); }
+        catch (error) {
+          // Broken/disappearing links cannot be authorized, but must not prevent
+          // listing healthy siblings. Unexpected filesystem failures still fail.
+          if (error instanceof VaultError && ["ACCESS_DENIED", "INVALID_PATH", "NOT_FOUND"].includes(error.code)) return [];
+          if (isCode(error, "ENOENT") || isCode(error, "ENOTDIR") || isCode(error, "ELOOP")) return [];
+          throw error;
+        }
+        return [{ path: relative, name: entry.name, isFolder: entry.isDirectory() }];
+      }))).flat(),
     };
   }
 
@@ -174,6 +185,7 @@ export class FilesystemVaultBackend implements VaultBackend {
         await fs.unlink(resolved.absolute);
       } else {
         if (!options.recursive) throw new VaultError("Folder deletion requires recursive=true.", { code: "ACCESS_DENIED" });
+        await this.assertWritableTree(resolved.absolute);
         await fs.rm(resolved.absolute, { recursive: true, force: false });
       }
       await this.synchronizeCommitted([resolved.absolute, canonical], stat.isDirectory());
@@ -193,6 +205,7 @@ export class FilesystemVaultBackend implements VaultBackend {
         if (!destinationStat.isFile()) throw new VaultError("Overwriting a destination folder is not supported.", { code: "ACCESS_DENIED" });
         requireRevision(options.expectedDestinationRevision, await revisionForFile(destination.absolute, this.config.maxFileSizeBytes));
       }
+      if (sourceStat.isDirectory()) await this.assertWritableTree(source.absolute);
       await fs.mkdir(path.dirname(destination.absolute), { recursive: true });
       const movedFiles = sourceStat.isDirectory() ? await countFiles(source.absolute, this.config.maxTreeEntries) : 1;
       if (source.absolute !== destination.absolute) {
@@ -202,6 +215,14 @@ export class FilesystemVaultBackend implements VaultBackend {
       }
       return { sourcePath: source.relative, destinationPath: destination.relative, kind: sourceStat.isDirectory() ? "folder" as const : "file" as const, movedFiles };
     });
+  }
+
+  private async assertWritableTree(directory: string): Promise<void> {
+    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+      const absolute = path.join(directory, entry.name);
+      await this.accessPolicy.resolve(path.relative(this.vaultRealPath, absolute), "write", true, true);
+      if (entry.isDirectory()) await this.assertWritableTree(absolute);
+    }
   }
 
   public async readNoteMetadata(input: string): Promise<NoteJsonMetadata> {

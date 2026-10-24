@@ -9,6 +9,7 @@ import MiniSearch from "minisearch";
 import type { IndexMode, WatchMode } from "../types.js";
 import { VaultError } from "../types.js";
 import type { VaultAccessPolicy } from "./accessPolicy.js";
+import { ensurePrivateDirectory } from "./privateCache.js";
 import { parseMetadata } from "./markdown.js";
 import { matchRegex } from "./regex.js";
 import type { SearchQuery, SearchResponse } from "./types.js";
@@ -62,7 +63,8 @@ export class VaultSearchService {
   ) {}
 
   public async initialize(): Promise<void> {
-    await fs.mkdir(this.cacheDir, { recursive: true });
+    await ensurePrivateDirectory(path.dirname(this.cacheDir));
+    await ensurePrivateDirectory(this.cacheDir);
     // Never load cached note bodies: a previous process may have had broader scopes.
     await fs.rm(path.join(this.cacheDir, INDEX_FILE), { force: true });
     try {
@@ -409,7 +411,7 @@ export class VaultSearchService {
     const destination = path.join(this.cacheDir, INDEX_FILE);
     const temporary = `${destination}.${process.pid}.${randomUUID()}.tmp`;
     try {
-      await fs.writeFile(temporary, JSON.stringify({ documents: [...this.documents.values()], savedAt: new Date().toISOString() } satisfies PersistedIndex), "utf8");
+      await fs.writeFile(temporary, JSON.stringify({ documents: [...this.documents.values()], savedAt: new Date().toISOString() } satisfies PersistedIndex), { encoding: "utf8", mode: 0o600, flag: "wx" });
       await fs.rename(temporary, destination);
       this.cacheDirty = false;
     } finally {

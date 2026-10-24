@@ -2,11 +2,13 @@
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
+import { assertSupportedNode } from "./runtime.js";
 import { loadConfig } from "./config.js";
 import { startHttpServer } from "./http.js";
 import { createServer } from "./server.js";
 
 async function main() {
+  assertSupportedNode();
   const config = loadConfig();
 
   if (config.mcpTransport === "http") {

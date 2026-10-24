@@ -32,6 +32,7 @@ export type AppConfig = {
   mcpHttpPath: string;
   mcpAllowedHosts?: string[];
   mcpAuthToken?: string;
+  mcpHttpTlsProxy?: boolean;
 };
 
 export type VaultErrorCode =

@@ -2,7 +2,7 @@
 
 Standalone MCP server for reading, writing, searching, and managing an Obsidian vault directly through the filesystem. Obsidian and the Local REST API plugin do not need to be installed or running.
 
-> **Early preview: `0.1.0-alpha.1` (release candidate, not yet published).** Use a disposable, non-sensitive test vault. This is a prerelease, not a production-safety or stable-release claim. Local REST policy enforcement, protected paths, regex execution limits, cache permissions, HTTP hardening and runtime security review remain open. See [release gates](./RELEASING.md).
+> **Early preview: `0.1.0-alpha.1` (release candidate, not yet published).** Use a disposable, non-sensitive test vault. This is a prerelease, not a production-safety or stable-release claim. This branch implements Local REST policy enforcement, protected paths, bounded regex, private cache, HTTP hardening and patched runtime gates. Deployment inventory, Windows ACL review and owner release approval remain required. See [release gates](./RELEASING.md).
 
 [![CI](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/workflows/ci.yml)
 
@@ -10,7 +10,7 @@ The filesystem backend is standalone-first. The former Local REST integration re
 
 ## Requirements
 
-- Node.js 20.11 or newer
+- Patched Node.js 22.23.4+ within 22.x, or 24.22.1+ within 24.x (other major lines are unsupported)
 - A local directory to use as the vault
 
 ## Quick start
@@ -32,13 +32,13 @@ VAULT_PATH=C:/Users/me/Documents/My Vault
 npx obsidian-vaultbridge-mcp@alpha
 ```
 
-As verified on 2026-10-24, the `alpha` tag serves `0.1.0-alpha.0`; these commands will pick up the next prerelease only after intentional publication. For a fixed version, replace `@alpha` with the version you reviewed.
+As verified on 2026-10-24, the `alpha` tag serves `0.1.0-alpha.0`; these commands will pick up the next prerelease only after intentional publication. For a fixed version, replace `@alpha` with the version you reviewed. The published artifact does not contain this source patch: until release, build this branch and run `node /absolute/path/to/dist/index.js --vault /path/to/test-vault`.
 
 The default transport is STDIO. Obsidian, API keys, certificates, and REST endpoints are not required.
 
 ## Filesystem safety model
 
-These controls describe filesystem mode only. The deprecated Local REST adapter does not enforce the same path scopes or revision preconditions, and its backend status can misreport read-only mode ([#17](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/17)). Do not rely on it for restricted access.
+Filesystem mode provides canonical path checks and revision preconditions. The deprecated Local REST adapter now enforces read-only and lexical path scopes, and fails closed for unsupported search, active-file reads and atomic/revision guarantees; see [migration notes](./MIGRATION.md).
 
 - All tool paths are vault-relative; absolute, UNC, drive-qualified, traversal, and symlink-escape paths are rejected.
 - `READ_ONLY=true` disables every mutation.
@@ -70,7 +70,8 @@ These controls describe filesystem mode only. The deprecated Local REST adapter 
 | `MCP_HTTP_HOST` | `127.0.0.1` | HTTP bind host |
 | `MCP_HTTP_PORT` | `39145` | HTTP bind port |
 | `MCP_HTTP_PATH` | `/mcp` | Streamable HTTP endpoint |
-| `MCP_ALLOWED_HOSTS` | unset | Optional HTTP Host allowlist |
+| `MCP_ALLOWED_HOSTS` | loopback names | Required Host allowlist for network HTTP |
+| `MCP_HTTP_TLS_PROXY` | `false` | Acknowledge operator-managed TLS proxy for network HTTP |
 | `MCP_AUTH_TOKEN` | unset | Required when binding outside loopback |
 
 CLI arguments override `.env` and environment values:
@@ -284,10 +285,11 @@ read/patch/write workaround or claim filesystem atomicity for this adapter.
 npx obsidian-vaultbridge-mcp@alpha --vault "C:/Vault" --http
 ```
 
-Binding to a non-loopback host requires authentication:
+Binding to a non-loopback host requires authentication, an explicit Host allowlist and a trusted TLS proxy:
 
 ```bash
-npx obsidian-vaultbridge-mcp@alpha --vault "C:/Vault" --http --host 0.0.0.0 --auth-token "replace-with-a-secret"
+MCP_HTTP_TLS_PROXY=true MCP_ALLOWED_HOSTS=mcp.example.com \
+  npx obsidian-vaultbridge-mcp@alpha --vault "C:/Vault" --http --host 0.0.0.0 --auth-token "replace-with-a-secret"
 ```
 
 Clients must send `Authorization: Bearer <token>`.
@@ -307,7 +309,7 @@ This backend exists for migration only; its removal schedule has not been agreed
 
 The [test suite](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/tree/main/test) uses Vitest with V8 coverage. It exercises filesystem/revision safety, Markdown/YAML, search scopes and freshness, Canvas, MCP STDIO/HTTP, and known compatibility-adapter limitations. Tests use temporary synthetic vaults. Passing characterization tests for a known limitation do not mean that limitation is fixed.
 
-[CI](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/workflows/ci.yml) runs on Ubuntu, macOS and Windows with Node 20/22. It builds, tests, lints, audits production dependencies, checks the pack manifest and installs an actual tarball into a separate consumer for an `npx` MCP smoke test of both executable names. Tests stay in GitHub and are not shipped in the npm tarball.
+[CI](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/workflows/ci.yml) runs on Ubuntu, macOS and Windows with Node 22.23.4/24.22.1. It builds, tests, lints, audits production dependencies, checks the pack manifest and installs an actual tarball into a separate consumer for an `npx` MCP smoke test of both executable names. Tests stay in GitHub and are not shipped in the npm tarball.
 
 ```bash
 npm ci
@@ -320,3 +322,43 @@ npm audit --omit=dev --audit-level=high
 ```
 
 See [RELEASING.md](./RELEASING.md) for source/artifact evidence, remaining gates and manual prerelease steps. npm.io is a third-party index; its test indicator and score are not a substitute for the linked test/CI evidence.
+
+### Protected vault paths
+
+Every backend denies path segments `.obsidian`, `.git`, `.env` and `.env.*`,
+plus internal `.obsidian-vault-mcp-*` temporary paths. Matching is case-insensitive
+on all platforms and covers Windows trailing-dot/space and alternate-stream
+aliases. Listings hide denied entries; filesystem authorization also checks
+canonical symlink targets. Recursive deletion/moves reject an entire directory
+if it contains a denied descendant. Use Obsidian or an administrator tool for
+control-file maintenance; there is no MCP override.
+
+### Search cache privacy
+
+`CACHE_DIR/<vault-hash>/search-index.json` contains plaintext note bodies. Startup
+rebuilds it from the current read scope and discards the previous snapshot.
+POSIX cache roots/vault directories are repaired to `0700`; new index files use
+`0600` with exclusive temporary-file creation and cleanup on failure. Cache
+symlinks and foreign-owned directories are rejected. Use a dedicated cache
+location owned by the service account on a local filesystem. Windows relies on
+an owner-only inherited NTFS ACL: set it on `CACHE_DIR` before starting (POSIX
+mode bits do not secure NTFS). Avoid shared/network filesystems with permissive
+ACLs. Stop the process and delete `CACHE_DIR` to remove retained snapshots;
+normal shutdown retains the authorized index for inspection.
+
+### HTTP deployment requirements
+
+Loopback HTTP is intended for trusted local clients. For network binding use a
+TLS-terminating reverse proxy, firewall the backend so only that proxy can reach
+it, set `MCP_HTTP_TLS_PROXY=true`, configure `MCP_ALLOWED_HOSTS` (hostnames without
+ports, bracket IPv6), and require `MCP_AUTH_TOKEN`. The proxy must preserve Host,
+Authorization and Origin. This flag acknowledges operator-managed TLS; the
+backend still speaks plaintext HTTP. Forwarded headers are never trusted.
+Native clients may omit Origin; browser requests must have an exact same-origin
+value using HTTP locally and HTTPS behind the proxy. Host, Origin and token
+checks run before the body parser. All compressed bodies (br, gzip, deflate)
+are rejected with 415; send uncompressed JSON. JSON bodies are limited to 100 KiB.
+The server limits headers to 16 KiB, requests to 120/minute across the instance,
+active responses to 32, connections to 128 and requests/socket to 100. Header,
+body and keep-alive timeouts are 10/30/5 seconds; SSE response streams have no
+fixed duration. Use separate instances for clients needing larger shared budgets.

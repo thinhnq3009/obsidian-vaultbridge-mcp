@@ -21,8 +21,7 @@ export class VaultAccessPolicy {
   }
 
   public async resolve(input: string, access: Access, mustExist: boolean, denyRoot = false): Promise<{ relative: string; absolute: string }> {
-    const relative = normalizeRelative(input);
-    this.assertAllowed(relative, access);
+    const relative = this.authorize(input, access);
     const absolute = path.resolve(this.root, ...relative.split("/").filter(Boolean));
     this.assertInside(absolute);
     const ancestor = await nearestExisting(absolute);
@@ -39,7 +38,7 @@ export class VaultAccessPolicy {
   /** Allows walking ancestors of read scopes without authorizing their contents. */
   public mayTraverse(absolute: string): boolean {
     const relative = path.relative(this.root, absolute).replace(/\\/gu, "/");
-    if (relative === ".." || relative.startsWith("../") || path.isAbsolute(relative)) return false;
+    if (relative === ".." || relative.startsWith("../") || path.isAbsolute(relative) || isProtectedPath(relative)) return false;
     return relative === "" || this.readPrefixes.length === 0 || this.readPrefixes.some((prefix) => contains(prefix, relative) || contains(relative, prefix));
   }
 
@@ -48,6 +47,7 @@ export class VaultAccessPolicy {
     try {
       this.assertInside(absolute);
       const relative = normalizeRelative(path.relative(this.root, absolute));
+      if (isProtectedPath(relative)) return false;
       if (directory) {
         if (!this.mayTraverse(absolute)) return false;
       } else {
@@ -64,7 +64,15 @@ export class VaultAccessPolicy {
     }
   }
 
+  /** Lexical authorization for adapters that cannot resolve remote filesystem paths. */
+  public authorize(input: string, access: Access): string {
+    const relative = normalizeRelative(input);
+    this.assertAllowed(relative, access);
+    return relative;
+  }
+
   private assertAllowed(relative: string, access: Access): void {
+    if (isProtectedPath(relative)) throw new VaultError("Protected vault path.", { code: "ACCESS_DENIED" });
     if (access === "write" && this.readOnly) throw new VaultError("Vault is in read-only mode.", { code: "READ_ONLY" });
     const prefixes = access === "read" ? this.readPrefixes : this.writePrefixes;
     if (prefixes.length > 0 && !prefixes.some((prefix) => contains(prefix, relative))) throw new VaultError(`Path is outside configured ${access} scope: ${relative}`, { code: "ACCESS_DENIED" });
@@ -101,4 +109,12 @@ async function nearestExisting(candidate: string): Promise<string> {
     current = parent;
   }
   return current;
+}
+
+/** Case-insensitive on every platform, including Windows trailing-dot/ADS aliases. */
+export function isProtectedPath(relative: string): boolean {
+  return relative.replace(/\\/gu, "/").split("/").some((segment) => {
+    const name = segment.split(":")[0]!.replace(/[. ]+$/gu, "").toLowerCase();
+    return name === ".obsidian" || name === ".git" || name === ".env" || name.startsWith(".env.") || name.startsWith(".obsidian-vault-mcp-");
+  });
 }

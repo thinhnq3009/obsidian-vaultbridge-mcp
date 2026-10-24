@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
+import chokidar, { type FSWatcher } from "chokidar";
+import { VaultAccessPolicy } from "../src/backend/accessPolicy.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { FilesystemVaultBackend } from "../src/backend/filesystem.js";
@@ -160,20 +162,34 @@ describe("vault security boundaries", () => {
 
   it("keeps watcher events inside the read scope and vault while updating allowed notes", async () => {
     await seedScopes();
+    const watch = chokidar.watch;
+    let watcher!: FSWatcher;
+    const events: Array<{ event: string; path: string }> = [];
+    vi.spyOn(chokidar, "watch").mockImplementation((...args) => {
+      watcher = watch(...args);
+      watcher.on("all", (event, file) => { events.push({ event, path: path.relative(fixture.vault, file) }); });
+      return watcher;
+    });
     const backend = await scopedBackend("indexed", "on");
     await fs.symlink(fixture.outside, path.join(fixture.vault, "Public/Outside"), process.platform === "win32" ? "junction" : "dir");
     await fs.symlink(path.join(fixture.vault, "Private"), path.join(fixture.vault, "Public/Alias"), process.platform === "win32" ? "junction" : "dir");
     await fs.writeFile(path.join(fixture.outside, "Secret.md"), "outsidemarker");
     await fs.writeFile(path.join(fixture.vault, "Private/Later.md"), "privatelatermarker");
     await fs.writeFile(path.join(fixture.vault, "Public/Added.md"), "watchermarker");
-    await expect.poll(async () => (await backend.search({ regex: "watchermarker", limit: 10 })).results.map((result) => result.path), { timeout: 3000 }).toEqual(["Public/Added.md"]);
+    try {
+      // This assertion measures watcher ingestion, not regex-worker scheduling.
+      await expect.poll(async () => (await backend.search({ query: "watchermarker", match: "exact", limit: 10 })).results.map((result) => result.path), { timeout: 3000 }).toEqual(["Public/Added.md"]);
+    } catch (error) {
+      const policy = new VaultAccessPolicy(await fs.realpath(fixture.vault), false, ["Public"], []);
+      throw new Error(`Watcher evidence: ${JSON.stringify({ events, watched: watcher.getWatched(), status: await backend.status(), readable: await policy.allowsSearchPath(path.join(fixture.vault, "Public/Added.md")) })}`, { cause: error });
+    }
     await fs.writeFile(path.join(fixture.vault, "Public/Added.md"), "changedmarker");
-    await expect.poll(async () => (await backend.search({ regex: "changedmarker", limit: 10 })).results, { timeout: 3000 }).toHaveLength(1);
+    await expect.poll(async () => (await backend.search({ query: "changedmarker", match: "exact", limit: 10 })).results, { timeout: 3000 }).toHaveLength(1);
     await fs.rename(path.join(fixture.vault, "Public/Added.md"), path.join(fixture.vault, "Public/Renamed.md"));
-    await expect.poll(async () => (await backend.search({ regex: "changedmarker", limit: 10 })).results.map((result) => result.path), { timeout: 3000 }).toEqual(["Public/Renamed.md"]);
+    await expect.poll(async () => (await backend.search({ query: "changedmarker", match: "exact", limit: 10 })).results.map((result) => result.path), { timeout: 3000 }).toEqual(["Public/Renamed.md"]);
     await fs.rename(path.join(fixture.vault, "Private/Later.md"), path.join(fixture.vault, "Private/Renamed.md"));
     await fs.unlink(path.join(fixture.vault, "Public/Renamed.md"));
-    await expect.poll(async () => (await backend.search({ regex: "changedmarker", limit: 10 })).results, { timeout: 3000 }).toHaveLength(0);
+    await expect.poll(async () => (await backend.search({ query: "changedmarker", match: "exact", limit: 10 })).results, { timeout: 3000 }).toHaveLength(0);
     expect((await backend.search({ regex: "outsidemarker|Privatemarker|privatelatermarker", limit: 10 })).results).toEqual([]);
     await backend.close();
     const cache = await indexText();
