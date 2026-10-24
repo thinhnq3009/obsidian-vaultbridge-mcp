@@ -314,3 +314,16 @@ aliases. Listings hide denied entries; filesystem authorization also checks
 canonical symlink targets. Recursive deletion/moves reject an entire directory
 if it contains a denied descendant. Use Obsidian or an administrator tool for
 control-file maintenance; there is no MCP override.
+
+### Search cache privacy
+
+`CACHE_DIR/<vault-hash>/search-index.json` contains plaintext note bodies. Startup
+rebuilds it from the current read scope and discards the previous snapshot.
+POSIX cache roots/vault directories are repaired to `0700`; new index files use
+`0600` with exclusive temporary-file creation and cleanup on failure. Cache
+symlinks and foreign-owned directories are rejected. Use a dedicated cache
+location owned by the service account on a local filesystem. Windows relies on
+an owner-only inherited NTFS ACL: set it on `CACHE_DIR` before starting (POSIX
+mode bits do not secure NTFS). Avoid shared/network filesystems with permissive
+ACLs. Stop the process and delete `CACHE_DIR` to remove retained snapshots;
+normal shutdown retains the authorized index for inspection.

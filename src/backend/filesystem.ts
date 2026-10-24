@@ -66,7 +66,7 @@ export class FilesystemVaultBackend implements VaultBackend {
       if (!this.config.readOnly) {
         const probe = path.join(this.config.cacheDir, `.health-${process.pid}`);
         await fs.mkdir(this.config.cacheDir, { recursive: true });
-        await fs.writeFile(probe, "ok", "utf8");
+        await fs.writeFile(probe, "ok", { encoding: "utf8", mode: 0o600, flag: "wx" });
         await fs.unlink(probe);
         checks.cache = "writable";
       }
