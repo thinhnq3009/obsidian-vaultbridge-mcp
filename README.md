@@ -253,7 +253,7 @@ Malformed/unclosed YAML, non-mapping frontmatter and anchors, tags, collections 
 block scalars on the reserved field are rejected without writing. Repair such
 frontmatter outside MCP first. Canvas/assets and move/delete operations do not
 receive timestamps. Bulk writes retain sequential partial success; they are not
-cross-file transactions. See [the write-path audit](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/blob/main/docs/OBS-003-write-audit.md).
+cross-file transactions. See [the write-path audit](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/blob/develop/docs/OBS-003-write-audit.md).
 
 The deprecated Local REST adapter does **not** implement this feature: its HTTP
 forwarding has no shared locked transaction or reliable revision precondition.
@@ -311,7 +311,7 @@ Please follow the [Conventional Commit, pull request and issue-linking guideline
 
 ## Tests and development
 
-The [test suite](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/tree/main/test) uses Vitest with V8 coverage. It exercises filesystem/revision safety, Markdown/YAML, search scopes and freshness, Canvas, MCP STDIO/HTTP, and known compatibility-adapter limitations. Tests use temporary synthetic vaults. Passing characterization tests for a known limitation do not mean that limitation is fixed.
+The [test suite](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/tree/develop/test) uses Vitest with V8 coverage. It exercises filesystem/revision safety, Markdown/YAML, search scopes and freshness, Canvas, MCP STDIO/HTTP, and known compatibility-adapter limitations. Tests use temporary synthetic vaults. Passing characterization tests for a known limitation do not mean that limitation is fixed.
 
 [CI](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/workflows/ci.yml) runs on Ubuntu, macOS and Windows with Node 22.23.4/24.22.1. It builds, tests, lints, audits production dependencies, checks the pack manifest and installs an actual tarball into a separate consumer for an `npx` MCP smoke test of both executable names. Tests stay in GitHub and are not shipped in the npm tarball.
 
