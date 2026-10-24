@@ -4,6 +4,7 @@ import type { Request, Response } from "express";
 import express from "express";
 import { hostHeaderValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
 import { timingSafeEqual } from "node:crypto";
+import { assertSupportedNode } from "./runtime.js";
 import { validateHttpDeployment } from "./config.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
@@ -13,6 +14,7 @@ import type { AppConfig } from "./types.js";
 type ApplicationFactory = (config: AppConfig) => Promise<ApplicationContext>;
 
 export async function startHttpServer(config: AppConfig, options: { createApplication?: ApplicationFactory } = {}): Promise<http.Server> {
+  assertSupportedNode();
   validateHttpDeployment(config);
   const application = await (options.createApplication ?? createApplication)(config);
   const app = express();
@@ -70,10 +72,12 @@ export async function startHttpServer(config: AppConfig, options: { createApplic
   server.maxConnections = 128;
   server.maxRequestsPerSocket = 100;
   server.on("close", () => { void application.close(); });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(config.mcpHttpPort, config.mcpHttpHost, () => { server.off("error", reject); resolve(); });
-  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(config.mcpHttpPort, config.mcpHttpHost, () => { server.off("error", reject); resolve(); });
+    });
+  } catch (error) { await application.close(); throw error; }
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : config.mcpHttpPort;
   const endpoint = `http://${config.mcpHttpHost}:${String(port)}${config.mcpHttpPath}`;

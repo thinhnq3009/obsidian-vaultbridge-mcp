@@ -18,7 +18,8 @@ describe("SEC-07 private plaintext cache", () => {
     await fs.chmod(directory, 0o777);
     await fs.writeFile(path.join(directory, "search-index.json"), "stale_private_marker", { mode: 0o666 });
     backend = new FilesystemVaultBackend({ ...fixture.config, indexMode: "indexed" });
-    await backend.initialize();
+    const originalUmask = process.umask(0);
+    try { await backend.initialize(); } finally { process.umask(originalUmask); }
     for (const target of [fixture.config.cacheDir, directory]) expect((await fs.stat(target)).mode & 0o777).toBe(0o700);
     expect((await fs.stat(path.join(directory, "search-index.json"))).mode & 0o777).toBe(0o600);
     expect(await fs.readFile(path.join(directory, "search-index.json"), "utf8")).not.toContain("stale_private_marker");

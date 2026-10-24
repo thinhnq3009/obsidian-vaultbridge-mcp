@@ -46,9 +46,9 @@ export class LocalRestBackend implements VaultBackend {
   public async readNote(input: string) {
     const path = this.policy.authorize(input, "read");
     const note = await this.client.readNote(path);
-    if (note.path) this.policy.authorize(note.path, "read");
+    const resultPath = note.path ? this.policy.authorize(note.path, "read") : path;
     const revision = note.etag ?? note.lastModified;
-    return { ...note, path, ...(revision ? { revision } : {}) };
+    return { ...note, path: resultPath, ...(revision ? { revision } : {}) };
   }
   public async writeNote(input: string, content: string, options?: WriteOptions) {
     const path = this.writable(input); this.requireLegacyWrite(options);

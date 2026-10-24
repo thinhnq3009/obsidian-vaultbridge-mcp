@@ -18,9 +18,10 @@ const mutations: Array<[string, (backend: VaultBackend) => Promise<unknown>]> = 
 ];
 describe("SEC-06A Local REST policy", () => {
   it.each(mutations)("denies %s in read-only mode before any network request", async (_name, call) => {
-    const request = vi.spyOn(RestClient.prototype, "writeFile").mockRejectedValue(new Error("must not call REST"));
+    const requests = ["writeNote", "writeFile", "appendToNote", "patchHeading", "patchFrontmatter", "deletePath", "readNote", "readNoteMetadata", "listFiles"] as const;
+    const spies = requests.map((method) => vi.spyOn(RestClient.prototype, method).mockRejectedValue(new Error("must not call REST")));
     await expect(call(new LocalRestBackend(config))).rejects.toMatchObject({ code: "READ_ONLY" });
-    expect(request).not.toHaveBeenCalled();
+    for (const spy of spies) expect(spy).not.toHaveBeenCalled();
   });
   it("reports read-only state truthfully", async () => { expect((await new LocalRestBackend(config).status()).readOnly).toBe(true); });
   it.each(["Private/Secret.md", "Allowed/.env", "Allowed/.git/config", "../Allowed/Note.md"])("denies read and write path %s without forwarding", async (target) => {

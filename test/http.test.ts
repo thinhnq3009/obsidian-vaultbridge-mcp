@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import http from "node:http";
-import { brotliCompressSync } from "node:zlib";
+import zlib, { brotliCompressSync } from "node:zlib";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -89,20 +89,24 @@ describe("startHttpServer", () => {
       const req = http.request({ hostname: "127.0.0.1", port: address.port, path: "/mcp", method: "POST", headers: { "content-type": "application/json", ...headers } }, (res) => { res.resume(); res.on("end", () => { resolve(res.statusCode!); }); });
       req.on("error", reject); req.end(body);
     });
+    const decoder = vi.spyOn(zlib, "createBrotliDecompress");
     // An invalid JSON body must never get parsed before Host/Origin/auth checks.
     expect(await send({ host: "attacker.invalid" })).toBe(403);
     expect(await send({ origin: "https://attacker.invalid", authorization: "Bearer test-token" })).toBe(403);
     expect(await send({})).toBe(401);
     expect(await send({ authorization: "Bearer wrong" })).toBe(401);
     const benign = brotliCompressSync(Buffer.from('{"jsonrpc":"2.0","id":1,"method":"ping"}'));
+    expect(await send({ "content-encoding": "br" }, benign)).toBe(401);
+    expect(await send({ host: "attacker.invalid", "content-encoding": "br", authorization: "Bearer test-token" }, benign)).toBe(403);
     expect(await send({ "content-encoding": "br", authorization: "Bearer test-token" }, benign)).toBe(415);
     expect(await send({ "content-encoding": "gzip", authorization: "Bearer test-token" })).toBe(415);
     expect(await send({ authorization: "Bearer test-token" }, "x".repeat(102401))).toBe(413);
+    expect(decoder).not.toHaveBeenCalled();
   });
 
   it("rejects unacknowledged network exposure before initializing the backend", async () => {
     const createApplication = vi.fn();
-    await expect(startHttpServer(makeConfig({ mcpHttpHost: "0.0.0.0", mcpAuthToken: "token" }), { createApplication })).rejects.toThrow(/TLS|proxy/);
+    await expect(startHttpServer(makeConfig({ mcpHttpHost: "0.0.0.0", mcpHttpPort: 0, mcpAuthToken: "token" }), { createApplication })).rejects.toThrow(/TLS|proxy/);
     expect(createApplication).not.toHaveBeenCalled();
   });
 

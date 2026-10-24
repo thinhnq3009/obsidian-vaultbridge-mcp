@@ -20,7 +20,7 @@ const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
 async function setup(indexMode: "scan" | "indexed" | "auto", watchMode: "off" | "on", count = 1, overrides: Partial<AppConfig> = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "obs-006-"));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "obs-006-")));
   const vault = path.join(root, "vault");
   await fs.mkdir(vault);
   // A nonempty initial snapshot avoids the old empty-index lazy scan hiding K04.
@@ -262,7 +262,11 @@ for (const mode of ["scan", "indexed"] as const) {
     expect(await paths(backend, { query: "modernstate" })).toEqual(["Real/Renamed.md"]);
     await backend.deletePath("Alias/Renamed.md", { expectedRevision: note.revision });
     expect(await paths(backend, { query: "modernstate" })).toEqual([]);
-    for (const folder of [".obsidian", ".git", ".obsidian-vault-mcp-hidden"]) await backend.writeNote(`${folder}/Hidden.md`, "excludedmarker");
+    for (const folder of [".obsidian", ".git", ".obsidian-vault-mcp-hidden"]) {
+      await expect(backend.writeNote(`${folder}/Hidden.md`, "excludedmarker")).rejects.toMatchObject({ code: "ACCESS_DENIED" });
+      await fs.mkdir(path.join(vault, folder), { recursive: true });
+      await fs.writeFile(path.join(vault, folder, "Hidden.md"), "excludedmarker");
+    }
     const outside = path.join(path.dirname(vault), "Outside.md");
     await fs.writeFile(outside, "outsidemarker");
     await fs.symlink(outside, path.join(vault, "Escape.md"));
@@ -554,6 +558,11 @@ for (const mode of ["scan", "indexed"] as const) {
     await backend.createFolder("Real");
     await fs.mkdir(path.dirname(path.join(vault, alias)), { recursive: true });
     await fs.symlink(path.join(vault, "Real"), path.join(vault, alias), process.platform === "win32" ? "junction" : "dir");
+    if (alias.startsWith(".obsidian/")) {
+      await expect(backend.writeNote(`${alias}/Scoped.md`, "previouscontent")).rejects.toMatchObject({ code: "ACCESS_DENIED" });
+      expect(await paths(backend)).toEqual([]);
+      return;
+    }
     const note = await backend.writeNote(`${alias}/Scoped.md`, "previouscontent");
     expect(await paths(backend, { query: "previouscontent" })).toEqual(["Real/Scoped.md"]);
     await backend.writeNote(note.path, "replacementcontent", { mode: "replace", expectedRevision: note.revision });

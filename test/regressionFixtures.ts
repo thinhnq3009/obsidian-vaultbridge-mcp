@@ -22,7 +22,7 @@ export const regressionNotes = {
 export type RegressionFixture = Awaited<ReturnType<typeof createRegressionFixture>>;
 
 export async function createRegressionFixture(overrides: Partial<AppConfig> = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "obs-001-"));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "obs-001-")));
   const vault = path.join(root, "vault");
   const cache = path.join(root, "cache");
   const outside = path.join(root, "outside");

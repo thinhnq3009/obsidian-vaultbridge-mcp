@@ -1,4 +1,11 @@
-# obsidian-local-rest-mcp
+# obsidian-vaultbridge-mcp
+
+**Early preview:** release candidate `0.1.0-alpha.1`. This change does not publish
+a package. Security deployment checks in [RELEASING.md](RELEASING.md) remain
+required. The published `@alpha` tag currently points to `0.1.0-alpha.0` and
+does not contain this source patch; until a reviewed release, build this branch
+and run `node /absolute/path/to/dist/index.js --vault /path/to/vault`.
+
 
 Standalone MCP server for safely reading, writing, searching, and managing an Obsidian vault directly through the filesystem. Obsidian and the Local REST API plugin do not need to be installed or running.
 
@@ -6,26 +13,26 @@ Version 1.0 is standalone-first. The former Local REST integration remains avail
 
 ## Requirements
 
-- Node.js 20.11 or newer
+- Patched Node.js 22.23.4+ within 22.x, or 24.22.1+ within 24.x (Node 20/odd majors and untested 26.x are unsupported)
 - A local directory to use as the vault
 
 ## Quick start
 
 ```bash
-npx obsidian-local-rest-mcp
+npx obsidian-vaultbridge-mcp@alpha
 ```
 
 The server auto-detects a single open Obsidian vault from Obsidian's local registry. If detection is ambiguous, pass the vault explicitly:
 
 ```bash
-npx obsidian-local-rest-mcp --vault "C:/Users/me/Documents/My Vault"
+npx obsidian-vaultbridge-mcp@alpha --vault "C:/Users/me/Documents/My Vault"
 ```
 
 Environment equivalent override:
 
 ```bash
 VAULT_PATH=C:/Users/me/Documents/My Vault
-npx obsidian-local-rest-mcp
+npx obsidian-vaultbridge-mcp@alpha
 ```
 
 The default transport is STDIO. Obsidian, API keys, certificates, and REST endpoints are not required.
@@ -83,7 +90,7 @@ CLI arguments override `.env` and environment values:
 [mcp_servers.obsidian_vault]
 enabled = true
 command = "npx"
-args = ["-y", "obsidian-local-rest-mcp", "--vault", "C:/Users/me/Documents/My Vault"]
+args = ["-y", "obsidian-vaultbridge-mcp@alpha", "--vault", "C:/Users/me/Documents/My Vault"]
 ```
 
 When Obsidian has exactly one open vault recorded locally, the `--vault` argument can be omitted.
@@ -95,7 +102,7 @@ When Obsidian has exactly one open vault recorded locally, the `--vault` argumen
   "mcpServers": {
     "obsidian-vault": {
       "command": "npx",
-      "args": ["-y", "obsidian-local-rest-mcp", "--vault", "C:/Users/me/Documents/My Vault"]
+      "args": ["-y", "obsidian-vaultbridge-mcp@alpha", "--vault", "C:/Users/me/Documents/My Vault"]
     }
   }
 }
@@ -273,13 +280,14 @@ read/patch/write workaround or claim filesystem atomicity for this adapter.
 ## HTTP mode
 
 ```bash
-npx obsidian-local-rest-mcp --vault "C:/Vault" --http
+npx obsidian-vaultbridge-mcp@alpha --vault "C:/Vault" --http
 ```
 
 Binding to a non-loopback host requires authentication:
 
 ```bash
-npx obsidian-local-rest-mcp --vault "C:/Vault" --http --host 0.0.0.0 --auth-token "replace-with-a-secret"
+MCP_HTTP_TLS_PROXY=true MCP_ALLOWED_HOSTS=mcp.example.com \
+  npx obsidian-vaultbridge-mcp@alpha --vault "C:/Vault" --http --host 0.0.0.0 --auth-token "replace-with-a-secret"
 ```
 
 Clients must send `Authorization: Bearer <token>`.
@@ -287,7 +295,7 @@ Clients must send `Authorization: Bearer <token>`.
 ## Local REST migration backend
 
 ```bash
-npx obsidian-local-rest-mcp \
+npx obsidian-vaultbridge-mcp@alpha \
   --backend local-rest \
   --api-key "your-key" \
   --base-url "https://127.0.0.1:27124"
