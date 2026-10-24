@@ -2,7 +2,7 @@
 
 Status: IMPLEMENTED_AWAITING_REVIEW. Delivery is on [PR #25](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/pull/25), which remains open. No merge, tag change or publication.
 
-The initial preparation evidence below describes commit `9afa64c`; the CI repair follow-up supersedes its pending-CI and local-only statements.
+The initial preparation evidence below describes commit `9afa64c`; the CI repair follow-up supersedes its pending-CI and local-only statements. Current implementation head `d296d59a38903b0a80eef70f110e5b5f78b86e7c` has all six CI jobs green, including installed-tarball smoke.
 
 - Verified target: `thinhnq3009/obsidian-vaultbridge-mcp` (public GitHub repository
   ID 1217891264, default branch main). The checkout/remote still uses the historical
@@ -118,3 +118,23 @@ After the fix, the aliased-temp-root focused suite passes **91/91**, including t
 
 
 Descriptor follow-up local validation: Node 22.23.4 full V8 suite **420/420 passed** across 18 suites (89.60s). Node 20.20.2 installed-tarball smoke passes for both aliases on the updated candidate. Lint/build, clean pack/dry-run integrity match, and full/production audits pass. Updated two-mode descriptor regression was rerun after the lint-only binding correction and passes. Repaired remote matrix pending this follow-up push.
+
+
+## Verified remote repair result
+
+Implementation commits: `3cc3abe81a88f0af571702ca8cb99a021cc633b3` (Zod/canonical fixtures/bounded signals/Windows polling) and `d296d59a38903b0a80eef70f110e5b5f78b86e7c` (descriptor lifetime and regression). [PR run 40049159198](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40049159198) **completed successfully on d296d59**. Job logs were read to verify actual test counts and both smoke executable results, rather than inferring smoke success from a green test step.
+
+| Remote job | Actual Node | Tests | Build/lint/pack/audit | Installed tarball npx smoke |
+| --- | --- | --- | --- | --- |
+| [test (ubuntu-latest, 22)](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40049159198/job/120737667821) | 22.23.3 | 420/420 | passed | both aliases passed |
+| [test (macos-latest, 22)](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40049159198/job/120737667838) | 22.23.4 | 420/420 | passed | both aliases passed |
+| [test (windows-latest, 20)](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40049159198/job/120737667844) | 20.20.2 | 420/420 | passed | both aliases passed |
+| [test (windows-latest, 22)](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40049159198/job/120737667953) | 22.23.4 | 420/420 | passed | both aliases passed |
+| [test (ubuntu-latest, 20)](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40049159198/job/120737668002) | 20.20.2 | 420/420 | passed | both aliases passed |
+| [test (macos-latest, 20)](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40049159198/job/120737668016) | 20.20.2 | 420/420 | passed | both aliases passed |
+
+Every job passed these unchanged CI gates: `npm ci`, `npm run build`, `npm test`, `npm run lint`, `npm pack --dry-run`, `npm audit --omit=dev --audit-level=high`, and `npm run smoke:package`. The smoke installs its actual tarball plus production dependencies into a separate disposable consumer/vault, audits that consumer, and performs both executable MCP round trips. Local full audit also reports zero advisories; CI's explicit gate is the production audit. No audit bypass, test skip, timeout blanket, OS exclusion or runtime-support change was added.
+
+The Linux/macOS tarball integrity matches the locally repeated clean pack: `sha512-JoD4J4rJOsm7Q+OdpDWz2MOj/L9DFNlvVtBTfj8BF1fIjD6cKpgD7h6mo7O+89EapYs20bED5Z5vx/hn06cI3g==`. Both Windows jobs independently packed and smoke-tested `sha512-mAaOcAtU3oM8vTD425fxuUo7oG+Xgq46pXR7uLk6SRQnUVmFIptLJ4e9Gry7XzTnzk6vyM+1UCsPbN2bGjiFdg==`. Per-platform checksums and job URLs are preserved in issue-5-artifact.json. The final documentation-only handoff commit preserves the verified application/package contents.
+
+Remaining gates: human review of PR #25 and the release/safety work described in RELEASING.md, including #23's patched-runtime decision. PR #25 and issue #5 stay open. This repair does not merge, publish npm, change alpha/latest, or mark the release accepted. Candidate remains 0.1.0-alpha.1 with the legacy executable alias.

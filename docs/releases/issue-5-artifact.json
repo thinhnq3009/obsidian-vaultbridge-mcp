@@ -16,7 +16,7 @@
   },
   "repeated_clean_pack_and_dry_run_integrity_match": true,
   "checks": {
-    "npm_ci": "passed locally on Node 24.22.1 after Zod-only lock update; first repaired CI passed npm ci on all six jobs",
+    "npm_ci": "passed locally and in all six remote OS/Node jobs",
     "production_build": "passed (Node 20.20.2 / 22.23.4)",
     "lint": "passed",
     "diff_check": "passed",
@@ -36,7 +36,7 @@
         "obsidian-vaultbridge-mcp",
         "obsidian-local-rest-mcp"
       ],
-      "result": "current descriptor fix passed locally on Node 20.20.2 through both aliases; first fix passed locally Node 20/22 and remotely Ubuntu/macOS Node 20/22"
+      "result": "passed locally and in all six remote OS/Node jobs through both aliases"
     },
     "full_dependency_audit": {
       "info": 0,
@@ -46,11 +46,105 @@
       "critical": 0,
       "total": 0
     },
-    "production_audit": "passed in workspace and installed consumers",
+    "production_audit": "passed in workspace and every CI job/installed consumer",
     "optional_full_project_typecheck": "9 existing test-only diagnostics, identical on unmodified source baseline with the same final dependencies"
   },
-  "publication": "not performed; alpha/latest remain 0.1.0-alpha.0 at registry verification",
-  "remote_ci": "first repair run 40048673030: four jobs green, both Windows jobs failed only the two paused-descriptor cases; descriptor follow-up pending remote verification",
+  "publication": "not performed; prerelease intent 0.1.0-alpha.1 and migration alias retained; registry tags unchanged by this task",
+  "remote_ci": {
+    "run_id": 40049159198,
+    "url": "https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40049159198",
+    "source_head": "d296d59a38903b0a80eef70f110e5b5f78b86e7c",
+    "conclusion": "success",
+    "commands_passed_in_every_job": [
+      "npm ci",
+      "npm run build",
+      "npm test",
+      "npm run lint",
+      "npm pack --dry-run",
+      "npm audit --omit=dev --audit-level=high",
+      "npm run smoke:package"
+    ],
+    "jobs": [
+      {
+        "name": "test (ubuntu-latest, 22)",
+        "node": "22.23.3",
+        "url": "https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40049159198/job/120737667821",
+        "conclusion": "success",
+        "tests_passed": 420,
+        "tests_failed": 0,
+        "smoke_executables": [
+          "obsidian-vaultbridge-mcp",
+          "obsidian-local-rest-mcp"
+        ],
+        "packed_integrity": "sha512-JoD4J4rJOsm7Q+OdpDWz2MOj/L9DFNlvVtBTfj8BF1fIjD6cKpgD7h6mo7O+89EapYs20bED5Z5vx/hn06cI3g=="
+      },
+      {
+        "name": "test (macos-latest, 22)",
+        "node": "22.23.4",
+        "url": "https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40049159198/job/120737667838",
+        "conclusion": "success",
+        "tests_passed": 420,
+        "tests_failed": 0,
+        "smoke_executables": [
+          "obsidian-vaultbridge-mcp",
+          "obsidian-local-rest-mcp"
+        ],
+        "packed_integrity": "sha512-JoD4J4rJOsm7Q+OdpDWz2MOj/L9DFNlvVtBTfj8BF1fIjD6cKpgD7h6mo7O+89EapYs20bED5Z5vx/hn06cI3g=="
+      },
+      {
+        "name": "test (windows-latest, 20)",
+        "node": "20.20.2",
+        "url": "https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40049159198/job/120737667844",
+        "conclusion": "success",
+        "tests_passed": 420,
+        "tests_failed": 0,
+        "smoke_executables": [
+          "obsidian-vaultbridge-mcp",
+          "obsidian-local-rest-mcp"
+        ],
+        "packed_integrity": "sha512-mAaOcAtU3oM8vTD425fxuUo7oG+Xgq46pXR7uLk6SRQnUVmFIptLJ4e9Gry7XzTnzk6vyM+1UCsPbN2bGjiFdg=="
+      },
+      {
+        "name": "test (windows-latest, 22)",
+        "node": "22.23.4",
+        "url": "https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40049159198/job/120737667953",
+        "conclusion": "success",
+        "tests_passed": 420,
+        "tests_failed": 0,
+        "smoke_executables": [
+          "obsidian-vaultbridge-mcp",
+          "obsidian-local-rest-mcp"
+        ],
+        "packed_integrity": "sha512-mAaOcAtU3oM8vTD425fxuUo7oG+Xgq46pXR7uLk6SRQnUVmFIptLJ4e9Gry7XzTnzk6vyM+1UCsPbN2bGjiFdg=="
+      },
+      {
+        "name": "test (ubuntu-latest, 20)",
+        "node": "20.20.2",
+        "url": "https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40049159198/job/120737668002",
+        "conclusion": "success",
+        "tests_passed": 420,
+        "tests_failed": 0,
+        "smoke_executables": [
+          "obsidian-vaultbridge-mcp",
+          "obsidian-local-rest-mcp"
+        ],
+        "packed_integrity": "sha512-JoD4J4rJOsm7Q+OdpDWz2MOj/L9DFNlvVtBTfj8BF1fIjD6cKpgD7h6mo7O+89EapYs20bED5Z5vx/hn06cI3g=="
+      },
+      {
+        "name": "test (macos-latest, 20)",
+        "node": "20.20.2",
+        "url": "https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40049159198/job/120737668016",
+        "conclusion": "success",
+        "tests_passed": 420,
+        "tests_failed": 0,
+        "smoke_executables": [
+          "obsidian-vaultbridge-mcp",
+          "obsidian-local-rest-mcp"
+        ],
+        "packed_integrity": "sha512-JoD4J4rJOsm7Q+OdpDWz2MOj/L9DFNlvVtBTfj8BF1fIjD6cKpgD7h6mo7O+89EapYs20bED5Z5vx/hn06cI3g=="
+      }
+    ]
+  },
   "published_alpha_1_smoke": "pending intentional publication",
   "published_alpha_0_provenance": "no gitHead or attestation; 137/138 rebuilt dist files match 1edecc0, remaining difference is MCP name/version",
   "previous_preparation": {
@@ -108,7 +202,7 @@
     "sdk": "1.32.2 (deduplicated zod 4.6.7; compatible peer ^3.25 || ^4.0)",
     "alias_root_regression": "91 focused cases passed after descriptor fix (including original parent-swap attack, fault injection, exact I/O counts and watcher race)",
     "windows_watcher": "stat polling; no permission-error retry or suppression",
-    "remote_result": "descriptor follow-up pending",
+    "remote_result": "6/6 jobs green on d296d59; 420 tests per job, every gate including actual packed-tarball smoke passed",
     "attempt_1": {
       "head": "3cc3abe81a88f0af571702ca8cb99a021cc633b3",
       "run": "https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40048673030",
@@ -120,6 +214,10 @@
       ],
       "windows": "416 passed, 2 failed on both Node 20/22; paused read retained descriptor across final check"
     },
-    "descriptor_fix": "close read descriptor after captured bytes, before final identity/policy checks; new two-mode test failed 2/2 before and passed after"
+    "descriptor_fix": "close read descriptor after captured bytes, before final identity/policy checks; new two-mode test failed 2/2 before and passed after",
+    "fix_commits": [
+      "3cc3abe81a88f0af571702ca8cb99a021cc633b3",
+      "d296d59a38903b0a80eef70f110e5b5f78b86e7c"
+    ]
   }
 }
