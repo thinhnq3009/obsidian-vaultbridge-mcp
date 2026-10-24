@@ -86,7 +86,13 @@ export class FilesystemVaultBackend implements VaultBackend {
       entries: (await Promise.all(entries.map(async (entry) => {
         const relative = joinVaultPath(resolved.relative, entry.name);
         try { await this.accessPolicy.resolve(relative, "read", true); }
-        catch (error) { if (error instanceof VaultError && ["ACCESS_DENIED", "INVALID_PATH", "NOT_FOUND"].includes(error.code)) return []; throw error; }
+        catch (error) {
+          // Broken/disappearing links cannot be authorized, but must not prevent
+          // listing healthy siblings. Unexpected filesystem failures still fail.
+          if (error instanceof VaultError && ["ACCESS_DENIED", "INVALID_PATH", "NOT_FOUND"].includes(error.code)) return [];
+          if (isCode(error, "ENOENT") || isCode(error, "ENOTDIR") || isCode(error, "ELOOP")) return [];
+          throw error;
+        }
         return [{ path: relative, name: entry.name, isFolder: entry.isDirectory() }];
       }))).flat(),
     };
