@@ -52,7 +52,7 @@ export async function startHttpServer(config: AppConfig, options: { createApplic
     const transport = new StreamableHTTPServerTransport();
     response.on("close", () => { void transport.close(); void server.close(); });
     try {
-      await server.connect(transport as Parameters<typeof server.connect>[0]);
+      await server.connect(transport);
       await transport.handleRequest(request, response, request.body);
     } catch {
       await transport.close(); await server.close();
