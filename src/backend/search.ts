@@ -158,10 +158,11 @@ export class VaultSearchService {
     });
 
     if (query.regex) {
-      const matches = await matchRegex(query.regex, query.caseSensitive === true, results.map((candidate) => candidate.document!.content));
-      // External filesystem changes can revoke access while the worker runs.
-      // Recheck before publishing captured bodies/snippets or serving the batch.
-      if (await this.pruneUnauthorized() && this.effectiveMode === "indexed") await this.persist();
+      const matches = await matchRegex(query.regex, query.caseSensitive === true, results.map((candidate) => candidate.document!.content)).finally(async () => {
+        // Revoke cached access even when the worker rejects: the next request in
+        // this batch must not reuse a snapshot authorized before the worker ran.
+        if (await this.pruneUnauthorized() && this.effectiveMode === "indexed") await this.persist();
+      });
       results = results.filter((candidate, index) => matches.has(index) && this.documents.has(candidate.document!.path));
     }
 
