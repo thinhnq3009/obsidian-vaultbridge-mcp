@@ -292,19 +292,15 @@ export class VaultSearchService {
         this.remove(absolutePath);
         return;
       }
-      const stat = await fs.lstat(absolutePath);
-      if (!stat.isFile() || stat.size > this.maxFileSizeBytes) {
-        this.remove(absolutePath);
-        return;
-      }
-      // Open the final component without following links where supported. Validate
-      // the descriptor and full canonical path again to catch replacement races.
-      const handle = await fs.open(absolutePath, constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW));
+      // Inspect the opened descriptor rather than trusting a pre-open path stat.
+      // Nonblocking opens also let us reject a replacement FIFO without hanging.
+      const handle = await fs.open(absolutePath, constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW | constants.O_NONBLOCK));
       let content: string;
       let opened: Stats;
       try {
         opened = await handle.stat();
-        if (!opened.isFile() || opened.dev !== stat.dev || opened.ino !== stat.ino || opened.size > this.maxFileSizeBytes
+        const current = await fs.lstat(absolutePath);
+        if (!opened.isFile() || !current.isFile() || opened.dev !== current.dev || opened.ino !== current.ino || opened.size > this.maxFileSizeBytes
           || !(await this.accessPolicy.allowsSearchPath(absolutePath))) {
           this.remove(absolutePath);
           return;

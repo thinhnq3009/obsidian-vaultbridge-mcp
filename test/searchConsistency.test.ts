@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import chokidar, { type FSWatcher } from "chokidar";
+import chokidar, { FSWatcher } from "chokidar";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { FilesystemVaultBackend } from "../src/backend/filesystem.js";
@@ -105,10 +105,12 @@ function signal() {
 }
 
 function captureWatcher() {
-  const watch = chokidar.watch;
   let watcher!: FSWatcher;
-  vi.spyOn(chokidar, "watch").mockImplementation((...args) => {
-    watcher = watch(...args);
+  vi.spyOn(chokidar, "watch").mockImplementation((_paths, options) => {
+    // These tests inject events explicitly. Do not mix them with OS events from
+    // a live watcher (notably delayed initial changes from Windows polling).
+    watcher = new FSWatcher(options);
+    queueMicrotask(() => watcher.emit("ready"));
     return watcher;
   });
   return () => watcher;

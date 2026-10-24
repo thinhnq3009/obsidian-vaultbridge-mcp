@@ -129,6 +129,37 @@ describe("vault security boundaries", () => {
     expect(await indexText()).not.toContain("outsidemarker");
   });
 
+  it("rejects an outside descriptor even when the authorized path is restored before validation", async () => {
+    await seedScopes();
+    await fs.writeFile(path.join(fixture.outside, "Note.md"), "outsidemarker");
+    const target = path.join(fixture.vault, "Public/Note.md");
+    const realOpen = fs.open;
+    let replaced = false;
+    vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+      if (replaced || args[0] !== target) return realOpen(...args);
+      replaced = true;
+      const publicDir = path.dirname(target);
+      const original = path.join(fixture.vault, "Original");
+      await fs.rename(publicDir, original);
+      await fs.symlink(fixture.outside, publicDir, process.platform === "win32" ? "junction" : "dir");
+      const handle = await realOpen(...args);
+      try {
+        await fs.unlink(publicDir);
+        await fs.rename(original, publicDir);
+      } catch (error) {
+        await handle.close();
+        throw error;
+      }
+      return handle;
+    });
+    const backend = await scopedBackend("indexed");
+    expect(replaced).toBe(true);
+    expect((await backend.search({ regex: "outsidemarker|sharedmarker", limit: 10 })).results).toEqual([]);
+    expect(await indexText()).not.toContain("outsidemarker");
+    await backend.rebuildSearchIndex();
+    expect((await backend.search({ query: "sharedmarker", limit: 10 })).results.map((result) => result.path)).toEqual(["Public/Note.md"]);
+  });
+
   it("ignores post-start external directory links even with unrestricted read scopes", async () => {
     const backend = new FilesystemVaultBackend({ ...fixture.config, indexMode: "indexed", watchMode: "on" });
     backends.push(backend);

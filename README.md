@@ -305,6 +305,10 @@ npx obsidian-vaultbridge-mcp@alpha \
 
 This backend exists for migration only; its removal schedule has not been agreed. It is unsuitable for enforcing access restrictions. See [MIGRATION.md](./MIGRATION.md).
 
+## Contributing
+
+Please follow the [Conventional Commit, pull request and issue-linking guidelines](./CONTRIBUTING.md). Use the [PR template](./.github/PULL_REQUEST_TEMPLATE.md) to distinguish partial work (`Refs`) from an issue-completing PR (`Closes`). Release issues stay open until all publication and verification acceptance criteria are met.
+
 ## Tests and development
 
 The [test suite](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/tree/main/test) uses Vitest with V8 coverage. It exercises filesystem/revision safety, Markdown/YAML, search scopes and freshness, Canvas, MCP STDIO/HTTP, and known compatibility-adapter limitations. Tests use temporary synthetic vaults. Passing characterization tests for a known limitation do not mean that limitation is fixed.
