@@ -304,3 +304,13 @@ npm test
 npm run lint
 npm pack --dry-run
 ```
+
+### Protected vault paths
+
+Every backend denies path segments `.obsidian`, `.git`, `.env` and `.env.*`,
+plus internal `.obsidian-vault-mcp-*` temporary paths. Matching is case-insensitive
+on all platforms and covers Windows trailing-dot/space and alternate-stream
+aliases. Listings hide denied entries; filesystem authorization also checks
+canonical symlink targets. Recursive deletion/moves reject an entire directory
+if it contains a denied descendant. Use Obsidian or an administrator tool for
+control-file maintenance; there is no MCP override.
