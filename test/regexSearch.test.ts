@@ -13,6 +13,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { FilesystemVaultBackend } from "../src/backend/filesystem.js";
 import * as regexMatcher from "../src/backend/regex.js";
 import { createMcpServer } from "../src/server.js";
+import { VaultError } from "../src/types.js";
 import { makeConfig } from "./helpers.js";
 
 const run = promisify(execFile);
@@ -105,6 +106,48 @@ describe("bounded filesystem regex search", () => {
     expect((await backend.search({ regex: "private-marker", limit: 10 })).results).toEqual([]);
     expect((await backend.search({ query: "private-marker", limit: 10 })).results).toEqual([]);
   });
+
+  for (const mode of ["scan", "indexed"] as const) {
+    for (const revocation of ["delete", "symlink"] as const) {
+      it.each(["timeout", "worker failure"])(`${mode}: reauthorizes the batch after %s and ${revocation}`, async (failure) => {
+        const { vault, cache } = await fixture();
+        const backend = new FilesystemVaultBackend(makeConfig({ vaultPath: vault, cacheDir: cache, indexMode: mode }));
+        await backend.initialize();
+        cleanups.push(() => backend.close());
+        await backend.writeNote("Public/Revoked.md", "private-marker");
+        await backend.writeNote("Healthy.md", "healthy-marker");
+        const workerError = new VaultError(`Simulated regex ${failure}`, { code: "INVALID_QUERY" });
+        vi.spyOn(regexMatcher, "matchRegex").mockImplementationOnce(async () => {
+          // Revoke only after the batch's initial authorization pass, while the
+          // asynchronous regex request holds the queue against watcher updates.
+          if (revocation === "delete") {
+            await fs.rm(path.join(vault, "Public/Revoked.md"));
+          } else {
+            const outside = path.join(path.dirname(vault), "outside");
+            await fs.mkdir(outside);
+            await fs.writeFile(path.join(outside, "Revoked.md"), "outside-marker");
+            await fs.rename(path.join(vault, "Public"), path.join(vault, "Original"));
+            await fs.symlink(outside, path.join(vault, "Public"), process.platform === "win32" ? "junction" : "dir");
+          }
+          throw workerError;
+        });
+        // Queue without awaiting so all three requests share the same batch.
+        const [regex, revoked, healthy] = await Promise.allSettled([
+          backend.search({ regex: "private-marker", limit: 10 }),
+          backend.search({ query: "private-marker", limit: 10 }),
+          backend.search({ query: "healthy-marker", limit: 10 }),
+        ]);
+        expect(regex).toMatchObject({ status: "rejected", reason: workerError });
+        expect(revoked).toEqual({ status: "fulfilled", value: { results: [] } });
+        expect(healthy.status).toBe("fulfilled");
+        if (healthy.status === "fulfilled") expect(healthy.value.results.map((result) => result.path)).toEqual(["Healthy.md"]);
+        if (mode === "indexed") {
+          const [indexDirectory] = await fs.readdir(cache);
+          expect(await fs.readFile(path.join(cache, indexDirectory!, "search-index.json"), "utf8")).not.toContain("private-marker");
+        }
+      });
+    }
+  }
 
   it("returns INVALID_QUERY through the MCP tool and keeps the connection usable", async () => {
     const backend = await setup();

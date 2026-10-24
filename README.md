@@ -1,19 +1,16 @@
-# obsidian-vaultbridge-mcp
+# Obsidian VaultBridge MCP
 
-**Early preview:** release candidate `0.1.0-alpha.1`. This change does not publish
-a package. Security deployment checks in [RELEASING.md](RELEASING.md) remain
-required. The published `@alpha` tag currently points to `0.1.0-alpha.0` and
-does not contain this source patch; until a reviewed release, build this branch
-and run `node /absolute/path/to/dist/index.js --vault /path/to/vault`.
+Standalone MCP server for reading, writing, searching, and managing an Obsidian vault directly through the filesystem. Obsidian and the Local REST API plugin do not need to be installed or running.
 
+> **Early preview: `0.1.0-alpha.1` (release candidate, not yet published).** Use a disposable, non-sensitive test vault. This is a prerelease, not a production-safety or stable-release claim. This branch implements Local REST policy enforcement, protected paths, bounded regex, private cache, HTTP hardening and patched runtime gates. Deployment inventory, Windows ACL review and owner release approval remain required. See [release gates](./RELEASING.md).
 
-Standalone MCP server for safely reading, writing, searching, and managing an Obsidian vault directly through the filesystem. Obsidian and the Local REST API plugin do not need to be installed or running.
+[![CI](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/workflows/ci.yml)
 
-Version 1.0 is standalone-first. The former Local REST integration remains available as a deprecated migration backend for this major version.
+The filesystem backend is standalone-first. The former Local REST integration remains a deprecated migration adapter. The npm package is now `obsidian-vaultbridge-mcp`; see [migration and executable compatibility](./MIGRATION.md).
 
 ## Requirements
 
-- Patched Node.js 22.23.4+ within 22.x, or 24.22.1+ within 24.x (Node 20/odd majors and untested 26.x are unsupported)
+- Patched Node.js 22.23.4+ within 22.x, or 24.22.1+ within 24.x (other major lines are unsupported)
 - A local directory to use as the vault
 
 ## Quick start
@@ -35,9 +32,13 @@ VAULT_PATH=C:/Users/me/Documents/My Vault
 npx obsidian-vaultbridge-mcp@alpha
 ```
 
+As verified on 2026-10-24, the `alpha` tag serves `0.1.0-alpha.0`; these commands will pick up the next prerelease only after intentional publication. For a fixed version, replace `@alpha` with the version you reviewed. The published artifact does not contain this source patch: until release, build this branch and run `node /absolute/path/to/dist/index.js --vault /path/to/test-vault`.
+
 The default transport is STDIO. Obsidian, API keys, certificates, and REST endpoints are not required.
 
-## Safety model
+## Filesystem safety model
+
+Filesystem mode provides canonical path checks and revision preconditions. The deprecated Local REST adapter now enforces read-only and lexical path scopes, and fails closed for unsupported search, active-file reads and atomic/revision guarantees; see [migration notes](./MIGRATION.md).
 
 - All tool paths are vault-relative; absolute, UNC, drive-qualified, traversal, and symlink-escape paths are rejected.
 - `READ_ONLY=true` disables every mutation.
@@ -69,7 +70,8 @@ The default transport is STDIO. Obsidian, API keys, certificates, and REST endpo
 | `MCP_HTTP_HOST` | `127.0.0.1` | HTTP bind host |
 | `MCP_HTTP_PORT` | `39145` | HTTP bind port |
 | `MCP_HTTP_PATH` | `/mcp` | Streamable HTTP endpoint |
-| `MCP_ALLOWED_HOSTS` | unset | Optional HTTP Host allowlist |
+| `MCP_ALLOWED_HOSTS` | loopback names | Required Host allowlist for network HTTP |
+| `MCP_HTTP_TLS_PROXY` | `false` | Acknowledge operator-managed TLS proxy for network HTTP |
 | `MCP_AUTH_TOKEN` | unset | Required when binding outside loopback |
 
 CLI arguments override `.env` and environment values:
@@ -120,7 +122,7 @@ Core tools retain their existing names:
 - Canvas: read/create/update/delete plus semantic node and edge tools
 - Diagnostics: `obsidian_backend_status`, `obsidian_vault_health`
 
-`obsidian_get_active_file` and `obsidian_open_file` are exposed only by a backend with an active Obsidian runtime integration. They are intentionally absent in standalone mode.
+`obsidian_get_active_file` and `obsidian_open_file` are listed for compatibility but return errors in filesystem mode. They work only with an active Obsidian Local REST runtime. Their presence in the tool list does not imply standalone support.
 
 ### Safe update example
 
@@ -251,7 +253,7 @@ Malformed/unclosed YAML, non-mapping frontmatter and anchors, tags, collections 
 block scalars on the reserved field are rejected without writing. Repair such
 frontmatter outside MCP first. Canvas/assets and move/delete operations do not
 receive timestamps. Bulk writes retain sequential partial success; they are not
-cross-file transactions. See [the write-path audit](docs/OBS-003-write-audit.md).
+cross-file transactions. See [the write-path audit](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/blob/main/docs/OBS-003-write-audit.md).
 
 The deprecated Local REST adapter does **not** implement this feature: its HTTP
 forwarding has no shared locked transaction or reliable revision precondition.
@@ -269,7 +271,7 @@ read/patch/write workaround or claim filesystem atomicity for this adapter.
 - `INDEX_MODE=auto` selects an in-memory scan snapshot below 1,000 Markdown files and MiniSearch at or above that threshold. Mode selection happens at startup or explicit rebuild, not on each write.
 - The filesystem index is regenerated from authorized files at startup; previous cached note bodies are removed rather than trusted, including when switching to scan mode or narrowing `READ_PATHS`.
 - Successful filesystem mutations reconcile affected Markdown files/subtrees before returning, in both modes, including `WATCH_MODE=off`. Content, tags, frontmatter and paths reflect the commit on the following search. No-op and failed writes skip refresh. Single-note edits do not walk or rebuild the vault. Directory operations inspect cached path prefixes and walk only the affected readable subtrees.
-- Mutation refresh, watcher refresh, search and explicit rebuild share an ordered queue. Up to 50 queries waiting together share one full authorization pass over the snapshot, followed by serialized result projections. Regex queries recheck authorization after the worker finishes. A batch closes before authorization begins and at every mutation/rebuild boundary; there is no authorization TTL or reuse for later arrivals. Late watcher events reconcile the current path state rather than replaying historical content or blindly deleting IDs. Existing revision checks, locks, atomic writes and `agents_edit_at` still apply.
+- Mutation refresh, watcher refresh, search and explicit rebuild share an ordered queue. Up to 50 queries waiting together share one full authorization pass over the snapshot, followed by serialized result projections. Regex queries recheck authorization after the worker finishes, including timeout and failure paths. A batch closes before authorization begins and at every mutation/rebuild boundary; there is no authorization TTL or reuse for later arrivals. Late watcher events reconcile the current path state rather than replaying historical content or blindly deleting IDs. Existing revision checks, locks, atomic writes and `agents_edit_at` still apply.
 - `obsidian_search` retains mode-specific behavior: scan uses case-insensitive substrings over path/content; indexed uses MiniSearch fuzzy/prefix matching and relevance scores. An old query can still match new content fuzzily; use advanced search for exact qualification.
 - `obsidian_search_content_advanced` uses literal substring qualification over path/content in both modes. `case_sensitive` controls the query and content regex; folder boundaries, tags (optional leading `#`) and frontmatter values are exact filters. Tags/values retain their case and Unicode representation. Filters run before pagination. Exact results have score 1 and path ordering for ties; cursors are offsets for a stable dataset, not snapshots across mutations.
 - Filesystem regex search runs compilation and matching in a disposable worker with a 1,000 ms deadline (including worker startup), a 64 MiB old-generation heap limit, and at most 10,000 candidate notes / 16 MiB of UTF-8 content per query. Folder, tag, frontmatter and literal-query filters narrow candidates before these input limits. Invalid syntax, unsupported patterns, exceeded limits and worker failures return `INVALID_QUERY` without partial results. Timeouts stop the worker before releasing the search queue; other searches and Markdown mutations wait behind that queue while unrelated server operations remain responsive. Successful patterns retain JavaScript Unicode (`u`/`iu`) matching, including lookahead; the existing 256-character limit and heuristic syntax restrictions remain. The syntax filter alone is not a ReDoS guarantee. These limits apply to the filesystem backend, not the deprecated Local REST adapter.
@@ -283,7 +285,7 @@ read/patch/write workaround or claim filesystem atomicity for this adapter.
 npx obsidian-vaultbridge-mcp@alpha --vault "C:/Vault" --http
 ```
 
-Binding to a non-loopback host requires authentication:
+Binding to a non-loopback host requires authentication, an explicit Host allowlist and a trusted TLS proxy:
 
 ```bash
 MCP_HTTP_TLS_PROXY=true MCP_ALLOWED_HOSTS=mcp.example.com \
@@ -301,17 +303,25 @@ npx obsidian-vaultbridge-mcp@alpha \
   --base-url "https://127.0.0.1:27124"
 ```
 
-This backend exists for migration only and is planned for removal after the 1.x line. See [MIGRATION.md](./MIGRATION.md).
+This backend exists for migration only; its removal schedule has not been agreed. It is unsuitable for enforcing access restrictions. See [MIGRATION.md](./MIGRATION.md).
 
-## Development
+## Tests and development
+
+The [test suite](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/tree/main/test) uses Vitest with V8 coverage. It exercises filesystem/revision safety, Markdown/YAML, search scopes and freshness, Canvas, MCP STDIO/HTTP, and known compatibility-adapter limitations. Tests use temporary synthetic vaults. Passing characterization tests for a known limitation do not mean that limitation is fixed.
+
+[CI](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/workflows/ci.yml) runs on Ubuntu, macOS and Windows with Node 22.23.4/24.22.1. It builds, tests, lints, audits production dependencies, checks the pack manifest and installs an actual tarball into a separate consumer for an `npx` MCP smoke test of both executable names. Tests stay in GitHub and are not shipped in the npm tarball.
 
 ```bash
-npm install
+npm ci
 npm run build
 npm test
 npm run lint
 npm pack --dry-run
+npm run smoke:package
+npm audit --omit=dev --audit-level=high
 ```
+
+See [RELEASING.md](./RELEASING.md) for source/artifact evidence, remaining gates and manual prerelease steps. npm.io is a third-party index; its test indicator and score are not a substitute for the linked test/CI evidence.
 
 ### Protected vault paths
 

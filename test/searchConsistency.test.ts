@@ -20,6 +20,7 @@ const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
 async function setup(indexMode: "scan" | "indexed" | "auto", watchMode: "off" | "on", count = 1, overrides: Partial<AppConfig> = {}) {
+  // Resolve the temp root once, before installing spies or replacing parents.
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "obs-006-")));
   const vault = path.join(root, "vault");
   await fs.mkdir(vault);
@@ -88,6 +89,15 @@ for (const indexMode of ["scan", "indexed"] as const) {
   }
 }
 
+async function waitForSignal(promise: Promise<unknown>, label: string): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([promise, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => { reject(new Error(`Timed out waiting for ${label}`)); }, 2000);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
 function signal() {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => { resolve = done; });
@@ -104,8 +114,63 @@ function captureWatcher() {
   return () => watcher;
 }
 
+it.each(["move", "replace"] as const)("propagates a denied %s without retrying or changing note bytes", async (operation) => {
+  const { backend, vault } = await setup("indexed", "on");
+  const note = await backend.writeNote("Protected.md", "originalmarker");
+  const original = await fs.readFile(path.join(vault, note.path), "utf8");
+  const source = path.join(vault, note.path);
+  const destination = path.join(vault, operation === "move" ? "Destination.md" : note.path);
+  const rename = fs.rename;
+  let denied = 0;
+  vi.spyOn(fs, "rename").mockImplementation(async (...args) => {
+    if (args[1] === destination) {
+      denied++;
+      throw Object.assign(new Error("injected persistent rename denial"), { code: "EPERM" });
+    }
+    return rename(...args);
+  });
+  const mutation = operation === "move"
+    ? backend.movePath(note.path, "Destination.md", { expectedRevision: note.revision })
+    : backend.writeNote(note.path, "replacementmarker", { mode: "replace", expectedRevision: note.revision });
+  await expect(mutation).rejects.toMatchObject({ code: operation === "move" ? "EPERM" : "ACCESS_DENIED" });
+  expect(denied).toBe(1);
+  expect(await fs.readFile(source, "utf8")).toBe(original);
+  expect((await backend.readNote(note.path)).revision).toBe(note.revision);
+  expect(await paths(backend, { query: "originalmarker" })).toEqual([note.path]);
+  expect(await paths(backend, { query: "replacementmarker" })).toEqual([]);
+  expect((await fs.readdir(vault)).some((name) => name.startsWith(".obsidian-vault-mcp-"))).toBe(false);
+});
+
 for (const mode of ["scan", "indexed"] as const) {
   describe(`${mode}: ordering, failure isolation and exact qualification`, () => {
+    it("closes the index read handle before final authorization and publication", async () => {
+      const { backend, vault } = await setup(mode, "off");
+      const note = await backend.writeNote("Handle.md", "beforemarker");
+      const target = path.join(vault, note.path);
+      const open = fs.open;
+      let closed = false;
+      vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+        const handle = await open(...args);
+        if (args[0] === target) {
+          const close = handle.close.bind(handle);
+          vi.spyOn(handle, "close").mockImplementation(async () => { await close(); closed = true; });
+        }
+        return handle;
+      });
+      const policy = new VaultAccessPolicy(vault, false, [], []);
+      const allowed = policy.allowsSearchPath.bind(policy);
+      let checks = 0;
+      vi.spyOn(VaultAccessPolicy.prototype, "allowsSearchPath").mockImplementation(async (absolute, directory) => {
+        const result = await allowed(absolute, directory);
+        if (absolute === target && ++checks === 3) expect(closed).toBe(true);
+        return result;
+      });
+      await backend.writeNote(note.path, "aftermarker", { mode: "replace", expectedRevision: note.revision });
+      expect(checks).toBe(3);
+      expect(closed).toBe(true);
+      expect(await paths(backend, { query: "aftermarker" })).toEqual([note.path]);
+    });
+
     it("treats late unlink/add/change events as current-state reconciliation", async () => {
       const watcher = captureWatcher();
       const { backend, vault } = await setup(mode, "on");
@@ -140,13 +205,17 @@ for (const mode of ["scan", "indexed"] as const) {
         await rename(...args);
         if (args[1] === target) committed.resolve();
       });
-      watcher().emit("change", target);
-      await captured.promise;
-      const write = backend.writeNote("Current.md", "newcommitmarker", { mode: "replace", expectedRevision: revisionOf("oldwatchmarker") });
+      let write: Promise<unknown> | undefined;
       try {
-        await committed.promise;
-      } finally { release.resolve(); }
-      await write;
+        watcher().emit("change", target);
+        await waitForSignal(captured.promise, "watcher read capture");
+        write = backend.writeNote("Current.md", "newcommitmarker", { mode: "replace", expectedRevision: revisionOf("oldwatchmarker") });
+        await waitForSignal(Promise.race([committed.promise, write]), "filesystem commit");
+      } finally {
+        // Also release if capture or commit fails, so afterEach can drain the queue.
+        release.resolve();
+        if (write) await waitForSignal(write, "write completion");
+      }
       expect(await paths(backend, { query: "newcommitmarker" })).toEqual(["Current.md"]);
       expect(await paths(backend, { query: "oldwatchmarker" })).toEqual([]);
       await backend.rebuildSearchIndex();
@@ -193,11 +262,13 @@ for (const mode of ["scan", "indexed"] as const) {
       const note = await backend.writeNote("Failure.md", "beforefailure");
       const target = path.join(vault, note.path);
       const open = fs.open;
+      let injected = 0;
       vi.spyOn(fs, "open").mockImplementation(async (...args) => {
-        if (args[0] === target) throw new Error("injected index read failure");
+        if (args[0] === target) { injected++; throw new Error("injected index read failure"); }
         return open(...args);
       });
       await expect(backend.writeNote(note.path, "afterfailure", { mode: "replace", expectedRevision: note.revision })).rejects.toMatchObject({ code: "INDEX_ERROR", details: { committed: true } });
+      expect(injected).toBe(1);
       expect((await backend.readNote(note.path)).content).toContain("afterfailure");
       expect(await backend.status()).toMatchObject({ indexState: "degraded" });
       await expect(backend.search({ query: "beforefailure", limit: 10 })).rejects.toMatchObject({ code: "INDEX_ERROR" });
@@ -308,6 +379,8 @@ it("reports cache invalidation failure after commit and can recover through rebu
   expect(await paths(backend, { query: "committedmarker" })).toEqual(["Committed.md"]);
 });
 
+// Fixture creation/indexing touches 1,000 files under coverage. Keep the edit's
+// filesystem-call assertions strict, but allow slower CI workers time to set up.
 it.each([10, 1000])("performance smoke: edits one note without scanning a %i-note auto vault", async (count) => {
   const { backend, vault } = await setup("auto", "off", count);
   expect((await backend.status()).indexState).toBe(count < 1000 ? "scan" : "ready");
@@ -322,7 +395,7 @@ it.each([10, 1000])("performance smoke: edits one note without scanning a %i-not
   expect(open.mock.calls).toHaveLength(2); // One atomic temp write, one index read.
   process.stdout.write(`OBS-006 perf: vault=${count}, refreshed=1, directoryReads=0, indexBodyReads=1, editMs=${elapsedMs.toFixed(2)}\n`);
   expect(await paths(backend, { query: "performancemarker" })).toEqual(["Seed.md"]);
-});
+}, 20_000);
 
 it("keeps auto mode stable across the 1000-note boundary until an explicit rebuild", async () => {
   const { backend } = await setup("auto", "off", 999);
@@ -333,7 +406,7 @@ it("keeps auto mode stable across the 1000-note boundary until an explicit rebui
   await backend.deletePath("Boundary.md", { expectedRevision: (await backend.readNote("Boundary.md")).revision! });
   expect((await backend.status()).indexState).toBe("ready");
   expect(await paths(backend, { query: "boundarymarker" })).toEqual([]);
-});
+}, 20_000);
 
 it.each(["move", "delete"] as const)("reports a committed %s when cache invalidation fails", async (operation) => {
   const { backend } = await setup("indexed", "off");
