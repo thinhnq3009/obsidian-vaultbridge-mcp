@@ -1,4 +1,4 @@
-import { constants } from "node:fs";
+import { constants, type Stats } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -292,22 +292,27 @@ export class VaultSearchService {
       // the descriptor and full canonical path again to catch replacement races.
       const handle = await fs.open(absolutePath, constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW));
       let content: string;
+      let opened: Stats;
       try {
-        const opened = await handle.stat();
+        opened = await handle.stat();
         if (!opened.isFile() || opened.dev !== stat.dev || opened.ino !== stat.ino || opened.size > this.maxFileSizeBytes
           || !(await this.accessPolicy.allowsSearchPath(absolutePath))) {
           this.remove(absolutePath);
           return;
         }
         content = await handle.readFile("utf8");
-        const current = await fs.lstat(absolutePath);
-        if (Buffer.byteLength(content, "utf8") > this.maxFileSizeBytes || current.dev !== opened.dev || current.ino !== opened.ino
-          || !(await this.accessPolicy.allowsSearchPath(absolutePath))) {
-          this.remove(absolutePath);
-          return;
-        }
       } finally {
         await handle.close();
+      }
+      // No descriptor is needed after the bytes have been captured. In particular,
+      // do not pin a Windows file across a slow/paused final authorization check:
+      // a concurrent revision-safe atomic replacement must be able to commit.
+      // Revalidate the path identity and policy after closing, before publishing.
+      const current = await fs.lstat(absolutePath);
+      if (Buffer.byteLength(content, "utf8") > this.maxFileSizeBytes || current.dev !== opened.dev || current.ino !== opened.ino
+        || !(await this.accessPolicy.allowsSearchPath(absolutePath))) {
+        this.remove(absolutePath);
+        return;
       }
       let metadata: ReturnType<typeof parseMetadata>;
       try {

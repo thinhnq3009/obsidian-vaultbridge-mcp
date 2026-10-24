@@ -8,22 +8,22 @@
     "name": "obsidian-vaultbridge-mcp",
     "version": "0.1.0-alpha.1",
     "filename": "obsidian-vaultbridge-mcp-0.1.0-alpha.1.tgz",
-    "size": 94486,
-    "unpackedSize": 469856,
-    "shasum": "30549e9ddbd2572457f956c9c5e6ddeceb00ce7a",
-    "integrity": "sha512-QmdMr7A9YoO8tCEdl4bRgoanR2RhZSWJ6t175s9CG0RgjkF51MsVHb873kXltyrGnX9fqybl5Zyqj5/a5y23sA==",
+    "size": 94650,
+    "unpackedSize": 470268,
+    "shasum": "8a5ecffcfe5e8d4f6cde42aa7dbc2aee650dbc68",
+    "integrity": "sha512-JoD4J4rJOsm7Q+OdpDWz2MOj/L9DFNlvVtBTfj8BF1fIjD6cKpgD7h6mo7O+89EapYs20bED5Z5vx/hn06cI3g==",
     "entryCount": 156
   },
   "repeated_clean_pack_and_dry_run_integrity_match": true,
   "checks": {
-    "npm_ci": "passed (Node 20.20.2, final lockfile)",
+    "npm_ci": "passed locally on Node 24.22.1 after Zod-only lock update; first repaired CI passed npm ci on all six jobs",
     "production_build": "passed (Node 20.20.2 / 22.23.4)",
     "lint": "passed",
     "diff_check": "passed",
     "full_suite": {
-      "node": "20.20.2",
+      "node": "22.23.4",
       "suites": 18,
-      "passed": 418,
+      "passed": 420,
       "failed": 0,
       "coverage": "V8"
     },
@@ -36,7 +36,7 @@
         "obsidian-vaultbridge-mcp",
         "obsidian-local-rest-mcp"
       ],
-      "result": "passed locally through both aliases on Node 20.20.2 and Node 22.23.4 (npm 10.9.9 for Node 22)"
+      "result": "current descriptor fix passed locally on Node 20.20.2 through both aliases; first fix passed locally Node 20/22 and remotely Ubuntu/macOS Node 20/22"
     },
     "full_dependency_audit": {
       "info": 0,
@@ -50,7 +50,7 @@
     "optional_full_project_typecheck": "9 existing test-only diagnostics, identical on unmodified source baseline with the same final dependencies"
   },
   "publication": "not performed; alpha/latest remain 0.1.0-alpha.0 at registry verification",
-  "remote_ci": "repair pending remote matrix; initial run 40046769357 failed in all six jobs",
+  "remote_ci": "first repair run 40048673030: four jobs green, both Windows jobs failed only the two paused-descriptor cases; descriptor follow-up pending remote verification",
   "published_alpha_1_smoke": "pending intentional publication",
   "published_alpha_0_provenance": "no gitHead or attestation; 137/138 rebuilt dist files match 1edecc0, remaining difference is MCP name/version",
   "previous_preparation": {
@@ -106,8 +106,20 @@
     "main_baseline_run": "https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40003243448",
     "zod": "4.6.7",
     "sdk": "1.32.2 (deduplicated zod 4.6.7; compatible peer ^3.25 || ^4.0)",
-    "alias_root_regression": "6 failures reproduced before; 89 focused tests passed after",
+    "alias_root_regression": "91 focused cases passed after descriptor fix (including original parent-swap attack, fault injection, exact I/O counts and watcher race)",
     "windows_watcher": "stat polling; no permission-error retry or suppression",
-    "remote_result": "pending"
+    "remote_result": "descriptor follow-up pending",
+    "attempt_1": {
+      "head": "3cc3abe81a88f0af571702ca8cb99a021cc633b3",
+      "run": "https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40048673030",
+      "success": [
+        "ubuntu20",
+        "ubuntu22",
+        "macos20",
+        "macos22"
+      ],
+      "windows": "416 passed, 2 failed on both Node 20/22; paused read retained descriptor across final check"
+    },
+    "descriptor_fix": "close read descriptor after captured bytes, before final identity/policy checks; new two-mode test failed 2/2 before and passed after"
   }
 }

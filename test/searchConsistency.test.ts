@@ -143,6 +143,34 @@ it.each(["move", "replace"] as const)("propagates a denied %s without retrying o
 
 for (const mode of ["scan", "indexed"] as const) {
   describe(`${mode}: ordering, failure isolation and exact qualification`, () => {
+    it("closes the index read handle before final authorization and publication", async () => {
+      const { backend, vault } = await setup(mode, "off");
+      const note = await backend.writeNote("Handle.md", "beforemarker");
+      const target = path.join(vault, note.path);
+      const open = fs.open;
+      let closed = false;
+      vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+        const handle = await open(...args);
+        if (args[0] === target) {
+          const close = handle.close.bind(handle);
+          vi.spyOn(handle, "close").mockImplementation(async () => { await close(); closed = true; });
+        }
+        return handle;
+      });
+      const policy = new VaultAccessPolicy(vault, false, [], []);
+      const allowed = policy.allowsSearchPath.bind(policy);
+      let checks = 0;
+      vi.spyOn(VaultAccessPolicy.prototype, "allowsSearchPath").mockImplementation(async (absolute, directory) => {
+        const result = await allowed(absolute, directory);
+        if (absolute === target && ++checks === 3) expect(closed).toBe(true);
+        return result;
+      });
+      await backend.writeNote(note.path, "aftermarker", { mode: "replace", expectedRevision: note.revision });
+      expect(checks).toBe(3);
+      expect(closed).toBe(true);
+      expect(await paths(backend, { query: "aftermarker" })).toEqual([note.path]);
+    });
+
     it("treats late unlink/add/change events as current-state reconciliation", async () => {
       const watcher = captureWatcher();
       const { backend, vault } = await setup(mode, "on");

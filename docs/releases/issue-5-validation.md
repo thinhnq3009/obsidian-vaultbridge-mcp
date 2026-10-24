@@ -106,3 +106,15 @@ TMPDIR=/tmp/vaultbridge-ci25/alias-tmp npx vitest run test/searchConsistency.tes
 Node 20.20.2: `npm run build`, `npm test` (18 suites, **418 passed**, V8 coverage) and `npm run smoke:package` pass. Node 22.23.4 with npm 10.9.9: `npm run smoke:package` passes. Both installed executable names complete MCP initialize/list/create/read/replace/stale-conflict checks. Lint, dry-run/pack, full and production audit results and the replacement candidate identity are recorded in issue-5-artifact.json. Optional full-project typecheck limitations from the initial preparation remain outside the configured production build.
 
 Remote repaired matrix is pending push/verification at this checkpoint. Node 20/22 CI and engines are unchanged; #23 still governs patched runtime support before release. No merge/publish/retag or #5 completion.
+
+
+### Windows descriptor follow-up
+
+Repair commit `3cc3abe81a88f0af571702ca8cb99a021cc633b3`, [run 40048673030](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40048673030): Ubuntu/macOS Node 20/22 passed every gate including smoke. Windows Node 20/22 each passed 416/418 tests; the only failures were the deliberately paused old-watcher-read cases, with ACCESS_DENIED at atomic replacement. The earlier directory rename, path matching and injection failures were gone.
+
+The old search read kept its descriptor open while awaiting the final authorization/publication check. A deterministic two-mode Linux regression (`npx vitest run test/searchConsistency.test.ts -t 'closes the index read handle'`) failed **2/2 before the fix**: the final check observed an open handle. Search now captures the bytes and descriptor identity, closes in finally, then validates current path identity/size/policy before publishing. No file handle is retained across the deliberate final-check pause, so Windows replacement can commit. Checks before opening and after reading, symlink rejection, ordered reconciliation and fail-closed error behavior are retained. Permission failures are neither retried nor swallowed.
+
+After the fix, the aliased-temp-root focused suite passes **91/91**, including the original race/attack tests and both new descriptor-lifetime cases. Lint and production build pass. Updated full-suite, smoke, audit, artifact and remote results are recorded below/in issue-5-artifact.json as they complete. All earlier snapshot results are historical, not proof of the current head.
+
+
+Descriptor follow-up local validation: Node 22.23.4 full V8 suite **420/420 passed** across 18 suites (89.60s). Node 20.20.2 installed-tarball smoke passes for both aliases on the updated candidate. Lint/build, clean pack/dry-run integrity match, and full/production audits pass. Updated two-mode descriptor regression was rerun after the lint-only binding correction and passes. Repaired remote matrix pending this follow-up push.
