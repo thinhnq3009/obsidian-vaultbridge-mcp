@@ -58,14 +58,13 @@ describe("OBS-001 filesystem safety", () => {
     expect(await fs.readFile(path.join(fixture.vault, "Private/Secret.md"), "utf8")).toBe("secret");
   });
 
-  it("KNOWN K03: search bypasses readPaths, even though direct read is denied", async () => {
+  it("enforces readPaths for search as well as direct reads", async () => {
     const scoped = new FilesystemVaultBackend({ ...fixture.config, readPaths: ["Public"] });
     await scoped.initialize();
     try {
       await expect(scoped.readNote("Comments.md")).rejects.toMatchObject({ code: "ACCESS_DENIED" });
       const search = await scoped.search({ query: "Body stays", limit: 10 });
-      expect(search.results.map((result) => result.path)).toEqual(["Comments.md"]);
-      expect(search.results[0]?.snippet).toContain("Body stays");
+      expect(search.results).toEqual([]);
     } finally { await scoped.close(); }
   });
 
@@ -80,11 +79,9 @@ describe("OBS-001 filesystem safety", () => {
     expect((await fixture.backend.search({ query: "excluded_marker", limit: 10 })).results).toEqual([]);
   });
 
-  it("KNOWN K04: scan/watch-off search misses a create until explicit rebuild", async () => {
+  it("K04 regression: scan/watch-off search observes a committed create immediately", async () => {
     await fixture.backend.writeNote("Created.md", "fresh_marker");
     expect((await fixture.backend.readNote("Created.md")).content).toBe("fresh_marker");
-    expect((await fixture.backend.search({ query: "fresh_marker", limit: 10 })).results).toEqual([]);
-    await fixture.backend.rebuildSearchIndex();
     expect((await fixture.backend.search({ query: "fresh_marker", limit: 10 })).results.map((result) => result.path)).toEqual(["Created.md"]);
   });
 

@@ -1,3 +1,5 @@
+import http from "node:http";
+import { brotliCompressSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 
 import { buildVaultPath, encodeVaultSegments, mapRequestError, LocalRestBackend, type RequestLike } from "../src/obsidian/client.js";
@@ -54,7 +56,7 @@ describe("LocalRestBackend", () => {
         statusText: "Service Unavailable",
         headers: {},
         body: "nope",
-      })) as RequestLike,
+      })),
     });
 
     await expect(client.listFiles()).rejects.toMatchObject({
@@ -172,4 +174,23 @@ describe("mapRequestError", () => {
     const mapped = mapRequestError(new Error("offline"));
     expect(mapped.code).toBe("OBSIDIAN_UNREACHABLE");
   });
+});
+
+
+it("SEC-09: the real Local REST HTTP client does not inflate Brotli responses", async () => {
+  const content = "synthetic benign response";
+  const encoded = brotliCompressSync(Buffer.from(content));
+  const server = http.createServer((_request, response) => {
+    response.writeHead(200, { "Content-Type": "text/markdown", "Content-Encoding": "br" });
+    response.end(encoded);
+  });
+  await new Promise<void>((resolve) => { server.listen(0, "127.0.0.1", resolve); });
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected TCP listener");
+    const client = new LocalRestBackend({ ...config, obsidianBaseUrl: `http://127.0.0.1:${String(address.port)}` });
+    const note = await client.readNote("Synthetic.md");
+    expect(note.content).toBe(encoded.toString("utf8"));
+    expect(note.content).not.toBe(content);
+  } finally { await new Promise<void>((resolve, reject) => { server.close((error) => { if (error) reject(error); else resolve(); }); }); }
 });

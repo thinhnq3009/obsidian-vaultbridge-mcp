@@ -34,6 +34,7 @@ export const registerSearchContentAdvancedTool: ToolRegistrar = (server, backend
     async ({ query, folder, tag, regex, frontmatter, case_sensitive: caseSensitive, limit, cursor, sort }) => {
       try {
         const result = await backend.search({
+          match: "exact",
           ...(query !== undefined ? { query } : {}), ...(folder !== undefined ? { folder } : {}), ...(tag !== undefined ? { tag } : {}),
           ...(regex !== undefined ? { regex } : {}), ...(frontmatter !== undefined ? { frontmatter } : {}), caseSensitive, limit,
           ...(cursor !== undefined ? { cursor } : {}), sort,

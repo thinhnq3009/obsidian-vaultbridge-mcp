@@ -13,7 +13,7 @@ type PositionedNode = {
   depth?: number;
   value?: string;
   url?: string;
-  position?: { start: { offset?: number }; end: { offset?: number } };
+  position?: { start: { offset?: number; line: number }; end: { offset?: number; line: number } };
 };
 
 const parser = unified().use(remarkParse).use(remarkFrontmatter, ["yaml"]);
@@ -28,7 +28,7 @@ export function parseMetadata(content: string) {
   visit(tree, (rawNode) => {
     const node = rawNode as PositionedNode;
     if (node.type === "heading" && node.depth) {
-      headings.push({ text: toString(node as never), level: node.depth });
+      headings.push({ text: toString(node), level: node.depth });
     } else if (node.type === "link" && node.url) {
       links.add(node.url);
     } else if (node.type === "yaml" && typeof node.value === "string") {
@@ -57,28 +57,52 @@ export function parseMetadata(content: string) {
   return { frontmatter, headings, tags: [...tags], links: [...links] };
 }
 
+/** Read the exact body slice; line bounds are 1-based, end-exclusive and untruncated. */
+export function readHeadingSection(content: string, heading: string, occurrence?: number) {
+  const source = stripBom(content);
+  const { selected, end } = selectHeadingSection(source, heading, occurrence);
+  if (!selected) throw new VaultError(`Heading occurrence not found: ${heading} (${occurrence})`, { code: "HEADING_NOT_FOUND" });
+  if (!selected.position || selected.position.end.offset === undefined || !selected.depth) {
+    throw new VaultError("Heading position is unavailable.", { code: "INVALID_MARKDOWN" });
+  }
+  let start = selected.position.end.offset;
+  // The heading's terminating newline belongs to the heading, not its body.
+  if (source.startsWith("\r\n", start)) start += 2;
+  else if (source[start] === "\n" || source[start] === "\r") start += 1;
+  // AST starts can follow indentation/container markers on a heading line.
+  const bodyEnd = end < source.length ? Math.max(source.lastIndexOf("\n", end - 1), source.lastIndexOf("\r", end - 1)) + 1 : end;
+  const body = source.slice(start, bodyEnd);
+  const startLine = selected.position.end.line + 1;
+  const lineCount = (body.match(/\r\n|\r|\n/gu)?.length ?? 0) + (body.length > 0 && !/[\r\n]$/u.test(body) ? 1 : 0);
+  return { heading: toString(selected).trim(), level: selected.depth, content: body, start_line: startLine, end_line: startLine + lineCount };
+}
+
+// Shared with heading patches: retain their matching, ambiguity and range semantics.
+function selectHeadingSection(source: string, heading: string, occurrence?: number) {
+  const tree = parser.parse(source);
+  const headings: PositionedNode[] = [];
+  visit(tree, "heading", (rawNode) => { headings.push(rawNode as PositionedNode); });
+  const matches = headings.filter((node) => toString(node as never).trim() === heading.trim());
+  if (matches.length === 0) throw new VaultError(`Heading not found: ${heading}`, { code: "HEADING_NOT_FOUND" });
+  if (occurrence === undefined && matches.length > 1) throw new VaultError(`Heading is ambiguous: ${heading}`, { code: "AMBIGUOUS_HEADING" });
+  const selected = matches[(occurrence ?? 1) - 1];
+  const start = selected?.position?.end.offset;
+  let end = source.length;
+  if (start !== undefined && selected?.depth) {
+    for (const node of headings) {
+      const offset = node.position?.start.offset;
+      if (offset !== undefined && offset > start && (node.depth ?? 7) <= selected.depth && offset < end) end = offset;
+    }
+  }
+  return { selected, end };
+}
+
 export function patchHeadingContent(content: string, heading: string, patch: string, operation: PatchOperation, occurrence?: number): string {
   const bom = content.startsWith("\uFEFF") ? "\uFEFF" : "";
   const source = stripBom(content);
-  const tree = parser.parse(source);
-  const headingNodes: PositionedNode[] = [];
-  visit(tree, "heading", (rawNode) => {
-    const node = rawNode as PositionedNode;
-    if (toString(node as never).trim() === heading.trim()) headingNodes.push(node);
-  });
-
-  if (headingNodes.length === 0) throw new VaultError(`Heading not found: ${heading}`, { code: "HEADING_NOT_FOUND" });
-  if (occurrence === undefined && headingNodes.length > 1) throw new VaultError(`Heading is ambiguous: ${heading}`, { code: "AMBIGUOUS_HEADING" });
-  const selected = headingNodes[(occurrence ?? 1) - 1];
+  const { selected, end } = selectHeadingSection(source, heading, occurrence);
   if (!selected?.position?.end.offset || !selected.depth) throw new VaultError("Heading position is unavailable.", { code: "INVALID_MARKDOWN" });
-
   const start = selected.position.end.offset;
-  let end = source.length;
-  visit(tree, "heading", (rawNode) => {
-    const node = rawNode as PositionedNode;
-    const offset = node.position?.start.offset;
-    if (offset !== undefined && offset > start && (node.depth ?? 7) <= selected.depth! && offset < end) end = offset;
-  });
 
   const newline = source.includes("\r\n") ? "\r\n" : "\n";
   const current = source.slice(start, end);

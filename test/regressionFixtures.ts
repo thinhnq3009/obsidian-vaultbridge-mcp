@@ -22,7 +22,9 @@ export const regressionNotes = {
 export type RegressionFixture = Awaited<ReturnType<typeof createRegressionFixture>>;
 
 export async function createRegressionFixture(overrides: Partial<AppConfig> = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "obs-001-"));
+  // Match backend canonical paths (/private/var on macOS, long paths on Windows)
+  // before spies are installed; never realpath a swapped parent inside a spy.
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "obs-001-")));
   const vault = path.join(root, "vault");
   const cache = path.join(root, "cache");
   const outside = path.join(root, "outside");
