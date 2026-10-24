@@ -358,6 +358,10 @@ export class VaultSearchService {
     this.watcher = chokidar.watch(this.vaultRoot, {
       ignoreInitial: true,
       followSymlinks: false,
+      // Native directory watch handles can deny rename/replacement on Windows.
+      // Polling stats avoids those handles; mutation reconciliation still runs
+      // synchronously and every search read retains the same authorization checks.
+      usePolling: process.platform === "win32",
       ignored: (watchedPath) => isExcluded(this.vaultRoot, watchedPath) || !this.accessPolicy.mayTraverse(watchedPath),
       awaitWriteFinish: { stabilityThreshold: 250, pollInterval: 50 },
     });

@@ -8,10 +8,10 @@
     "name": "obsidian-vaultbridge-mcp",
     "version": "0.1.0-alpha.1",
     "filename": "obsidian-vaultbridge-mcp-0.1.0-alpha.1.tgz",
-    "size": 94349,
-    "unpackedSize": 469460,
-    "shasum": "2a21b2421d883f9fe1efe668a13dd4839d107a4f",
-    "integrity": "sha512-JL0OD8Tol30WIPhIzheZREpmFOv3nvWJ4mCEfstt9rjea3SkEsFETIHoK2RkmaBnxbuYSWfM36L0JgwCG6Eclg==",
+    "size": 94486,
+    "unpackedSize": 469856,
+    "shasum": "30549e9ddbd2572457f956c9c5e6ddeceb00ce7a",
+    "integrity": "sha512-QmdMr7A9YoO8tCEdl4bRgoanR2RhZSWJ6t175s9CG0RgjkF51MsVHb873kXltyrGnX9fqybl5Zyqj5/a5y23sA==",
     "entryCount": 156
   },
   "repeated_clean_pack_and_dry_run_integrity_match": true,
@@ -23,7 +23,7 @@
     "full_suite": {
       "node": "20.20.2",
       "suites": 18,
-      "passed": 416,
+      "passed": 418,
       "failed": 0,
       "coverage": "V8"
     },
@@ -36,7 +36,7 @@
         "obsidian-vaultbridge-mcp",
         "obsidian-local-rest-mcp"
       ],
-      "result": "passed: initialize/list/create/read/replace/stale conflict; same candidate tarball"
+      "result": "passed locally through both aliases on Node 20.20.2 and Node 22.23.4 (npm 10.9.9 for Node 22)"
     },
     "full_dependency_audit": {
       "info": 0,
@@ -50,7 +50,64 @@
     "optional_full_project_typecheck": "9 existing test-only diagnostics, identical on unmodified source baseline with the same final dependencies"
   },
   "publication": "not performed; alpha/latest remain 0.1.0-alpha.0 at registry verification",
-  "remote_ci": "pending review/push; no remote CI result claimed",
+  "remote_ci": "repair pending remote matrix; initial run 40046769357 failed in all six jobs",
   "published_alpha_1_smoke": "pending intentional publication",
-  "published_alpha_0_provenance": "no gitHead or attestation; 137/138 rebuilt dist files match 1edecc0, remaining difference is MCP name/version"
+  "published_alpha_0_provenance": "no gitHead or attestation; 137/138 rebuilt dist files match 1edecc0, remaining difference is MCP name/version",
+  "previous_preparation": {
+    "source_head": "9afa64c712b330594652f21382460cc0137b8653",
+    "candidate": {
+      "name": "obsidian-vaultbridge-mcp",
+      "version": "0.1.0-alpha.1",
+      "filename": "obsidian-vaultbridge-mcp-0.1.0-alpha.1.tgz",
+      "size": 94349,
+      "unpackedSize": 469460,
+      "shasum": "2a21b2421d883f9fe1efe668a13dd4839d107a4f",
+      "integrity": "sha512-JL0OD8Tol30WIPhIzheZREpmFOv3nvWJ4mCEfstt9rjea3SkEsFETIHoK2RkmaBnxbuYSWfM36L0JgwCG6Eclg==",
+      "entryCount": 156
+    },
+    "local_checks": {
+      "npm_ci": "passed (Node 20.20.2, final lockfile)",
+      "production_build": "passed (Node 20.20.2 / 22.23.4)",
+      "lint": "passed",
+      "diff_check": "passed",
+      "full_suite": {
+        "node": "20.20.2",
+        "suites": 18,
+        "passed": 416,
+        "failed": 0,
+        "coverage": "V8"
+      },
+      "installed_tarball_npx_smoke": {
+        "node_versions": [
+          "20.20.2",
+          "22.23.4"
+        ],
+        "executables": [
+          "obsidian-vaultbridge-mcp",
+          "obsidian-local-rest-mcp"
+        ],
+        "result": "passed: initialize/list/create/read/replace/stale conflict; same candidate tarball"
+      },
+      "full_dependency_audit": {
+        "info": 0,
+        "low": 0,
+        "moderate": 0,
+        "high": 0,
+        "critical": 0,
+        "total": 0
+      },
+      "production_audit": "passed in workspace and installed consumers",
+      "optional_full_project_typecheck": "9 existing test-only diagnostics, identical on unmodified source baseline with the same final dependencies"
+    }
+  },
+  "ci_repair": {
+    "initial_head": "9afa64c712b330594652f21382460cc0137b8653",
+    "failed_run": "https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40046769357",
+    "main_baseline_run": "https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40003243448",
+    "zod": "4.6.7",
+    "sdk": "1.32.2 (deduplicated zod 4.6.7; compatible peer ^3.25 || ^4.0)",
+    "alias_root_regression": "6 failures reproduced before; 89 focused tests passed after",
+    "windows_watcher": "stat polling; no permission-error retry or suppression",
+    "remote_result": "pending"
+  }
 }

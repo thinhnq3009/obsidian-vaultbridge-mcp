@@ -1,6 +1,8 @@
 # Issue #5 — release preparation handoff
 
-Status: IMPLEMENTED_AWAITING_REVIEW. No push, PR, merge, tag change or publication.
+Status: IMPLEMENTED_AWAITING_REVIEW. Delivery is on [PR #25](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/pull/25), which remains open. No merge, tag change or publication.
+
+The initial preparation evidence below describes commit `9afa64c`; the CI repair follow-up supersedes its pending-CI and local-only statements.
 
 - Verified target: `thinhnq3009/obsidian-vaultbridge-mcp` (public GitHub repository
   ID 1217891264, default branch main). The checkout/remote still uses the historical
@@ -77,3 +79,30 @@ To discard this change after review, revert the issue #5 commit and reinstall th
 previous lockfile; no vault migration is involved. This would restore the old
 package identity and dependency advisories. Do not use a source rollback as a
 reason to republish the vulnerable historical artifact.
+
+
+## PR #25 CI repair — 2026-10-24
+
+Source of truth: [failed PR run 40046769357](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40046769357), head `9afa64c712b330594652f21382460cc0137b8653`. Its six jobs failed: Ubuntu Node 20/22 at production audit; macOS/Windows at tests, before lint/pack/audit/smoke. The [clean main run 40003243448](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40003243448) independently has green Ubuntu jobs and failed macOS/Windows tests. No gates are suppressed.
+
+### Root causes and changes
+
+1. **Dependency advisory:** the old lock pins Zod 4.3.6. Production audit reproduces GHSA-mrhx-c7xc-m3w5 (high, affected <4.6.6). Only Zod changes in package.json/lockfile: ^4.6.7, resolved 4.6.7. SDK 1.32.2 accepts `^3.25 || ^4.0` and shares this single deduplicated installation. Full and production audits pass without force, exclusions or audit suppression.
+2. **Test path representation:** temp roots can use macOS /var vs /private/var or Windows short vs long names. Exact target spies missed authorized canonical opens, so failure injection and the parent-swap attack never ran, I/O counts were zero, and watcher signals were missed. Both fixture roots are now canonicalized once before spies/mutations. No authorization code, scope or operation-count assertion changes. The injected read-failure test also asserts exactly one failure injection.
+3. **Watcher liveness:** capture/commit waits now have bounded, labeled deadlines; release runs in finally even if capture fails, and the pending write is drained before cleanup. The deliberate old-read/commit ordering is preserved.
+4. **Windows handles:** native directory watchers can hold handles across directory rename/atomic replacement. Windows now uses Chokidar stat polling, avoiding native watch handles. Other platforms retain native watching; synchronous mutation reconciliation, symlink rejection and authorization remain unchanged. This costs polling work on Windows; no mutation retry or swallowed EPERM is introduced. Two added denial tests verify one rename attempt, unchanged bytes/revision/search, and temporary-file cleanup. Real Windows matrix results remain the validation gate for the platform fix.
+
+### Local evidence
+
+Linux disposable vaults only. Audit before fix: `npm audit --omit=dev --audit-level=high` fails with one high Zod advisory. A synthetic symlink temp root reproduces six of the exact CI failures:
+
+```sh
+TMPDIR=/tmp/vaultbridge-ci25/alias-tmp npx vitest run test/searchConsistency.test.ts test/securityBoundaries.test.ts -t 'reports a committed write if refresh|performance smoke|authorizes individual-file|rejects a parent replaced'
+# before: 6 failed; after fixture/signal fixes: all selected cases pass
+TMPDIR=/tmp/vaultbridge-ci25/alias-tmp npx vitest run test/searchConsistency.test.ts test/securityBoundaries.test.ts
+# after: 89 passed (including the two added denial cases)
+```
+
+Node 20.20.2: `npm run build`, `npm test` (18 suites, **418 passed**, V8 coverage) and `npm run smoke:package` pass. Node 22.23.4 with npm 10.9.9: `npm run smoke:package` passes. Both installed executable names complete MCP initialize/list/create/read/replace/stale-conflict checks. Lint, dry-run/pack, full and production audit results and the replacement candidate identity are recorded in issue-5-artifact.json. Optional full-project typecheck limitations from the initial preparation remain outside the configured production build.
+
+Remote repaired matrix is pending push/verification at this checkpoint. Node 20/22 CI and engines are unchanged; #23 still governs patched runtime support before release. No merge/publish/retag or #5 completion.
