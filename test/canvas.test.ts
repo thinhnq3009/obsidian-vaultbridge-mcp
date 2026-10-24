@@ -158,7 +158,7 @@ describe("canvas mutations", () => {
 describe("canvas tool metadata", () => {
   it("describes JSON Canvas format in the create tool", () => {
     const registerTool = vi.fn();
-    const fakeServer = { registerTool } as unknown as { registerTool: typeof registerTool };
+    const fakeServer = { registerTool };
     const fakeClient = {} as VaultBackend;
 
     registerCreateCanvasTool(fakeServer as never, fakeClient);

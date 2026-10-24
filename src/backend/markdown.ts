@@ -28,7 +28,7 @@ export function parseMetadata(content: string) {
   visit(tree, (rawNode) => {
     const node = rawNode as PositionedNode;
     if (node.type === "heading" && node.depth) {
-      headings.push({ text: toString(node as never), level: node.depth });
+      headings.push({ text: toString(node), level: node.depth });
     } else if (node.type === "link" && node.url) {
       links.add(node.url);
     } else if (node.type === "yaml" && typeof node.value === "string") {
@@ -74,7 +74,7 @@ export function readHeadingSection(content: string, heading: string, occurrence?
   const body = source.slice(start, bodyEnd);
   const startLine = selected.position.end.line + 1;
   const lineCount = (body.match(/\r\n|\r|\n/gu)?.length ?? 0) + (body.length > 0 && !/[\r\n]$/u.test(body) ? 1 : 0);
-  return { heading: toString(selected as never).trim(), level: selected.depth, content: body, start_line: startLine, end_line: startLine + lineCount };
+  return { heading: toString(selected).trim(), level: selected.depth, content: body, start_line: startLine, end_line: startLine + lineCount };
 }
 
 // Shared with heading patches: retain their matching, ambiguity and range semantics.

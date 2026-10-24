@@ -78,7 +78,7 @@
     "eslint": "^10.2.0",
     "tsx": "^4.23.15",
     "typescript": "^6.0.2",
-    "typescript-eslint": "^8.58.1",
+    "typescript-eslint": "^8.72.0",
     "vitest": "^5.0.5"
   },
   "publishConfig": {

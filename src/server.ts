@@ -64,7 +64,7 @@ function extractToolCallArgs(args: readonly unknown[]): { input: unknown; extra:
   const maybeExtra = args.length > 1 ? args[1] : args[0];
   return {
     input: args.length > 1 ? args[0] : undefined,
-    extra: isRecord(maybeExtra) ? maybeExtra as Partial<ToolExtra> : undefined,
+    extra: isRecord(maybeExtra) ? maybeExtra : undefined,
   };
 }
 
