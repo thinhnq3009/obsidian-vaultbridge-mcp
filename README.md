@@ -327,3 +327,20 @@ an owner-only inherited NTFS ACL: set it on `CACHE_DIR` before starting (POSIX
 mode bits do not secure NTFS). Avoid shared/network filesystems with permissive
 ACLs. Stop the process and delete `CACHE_DIR` to remove retained snapshots;
 normal shutdown retains the authorized index for inspection.
+
+### HTTP deployment requirements
+
+Loopback HTTP is intended for trusted local clients. For network binding use a
+TLS-terminating reverse proxy, firewall the backend so only that proxy can reach
+it, set `MCP_HTTP_TLS_PROXY=true`, configure `MCP_ALLOWED_HOSTS` (hostnames without
+ports, bracket IPv6), and require `MCP_AUTH_TOKEN`. The proxy must preserve Host,
+Authorization and Origin. This flag acknowledges operator-managed TLS; the
+backend still speaks plaintext HTTP. Forwarded headers are never trusted.
+Native clients may omit Origin; browser requests must have an exact same-origin
+value using HTTP locally and HTTPS behind the proxy. Host, Origin and token
+checks run before the body parser. All compressed bodies (br, gzip, deflate)
+are rejected with 415; send uncompressed JSON. JSON bodies are limited to 100 KiB.
+The server limits headers to 16 KiB, requests to 120/minute across the instance,
+active responses to 32, connections to 128 and requests/socket to 100. Header,
+body and keep-alive timeouts are 10/30/5 seconds; SSE response streams have no
+fixed duration. Use separate instances for clients needing larger shared budgets.

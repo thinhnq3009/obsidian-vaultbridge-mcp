@@ -68,9 +68,9 @@ export class LocalRestBackend implements VaultBackend {
     if ((await this.statPath(path)).kind !== "file") throw unsupported("folder deletion");
     await this.client.deletePath(path);
   }
-  public async createFolder(input: string): Promise<{ path: string; created: boolean }> { this.writable(input); throw unsupported("empty folders"); }
+  public async createFolder(input: string): Promise<{ path: string; created: boolean }> { this.writable(input); return await Promise.reject(unsupported("empty folders")); }
   public async movePath(sourcePath: string, destinationPath: string): Promise<{ sourcePath: string; destinationPath: string; kind: "file"; movedFiles: number }> {
-    this.writable(sourcePath); this.writable(destinationPath); throw unsupported("atomic or revision-checked moves");
+    this.writable(sourcePath); this.writable(destinationPath); return await Promise.reject(unsupported("atomic or revision-checked moves"));
   }
   public async readNoteMetadata(input: string) {
     const path = this.policy.authorize(input, "read");
@@ -78,7 +78,7 @@ export class LocalRestBackend implements VaultBackend {
     this.policy.authorize(metadata.path, "read");
     return { ...metadata, path };
   }
-  public async applyNoteEdits(input: string): Promise<NoteEditsResult> { this.writable(input); throw unsupported("atomic multi-edit"); }
+  public async applyNoteEdits(input: string): Promise<NoteEditsResult> { this.writable(input); return await Promise.reject(unsupported("atomic multi-edit")); }
   public async patchHeading(input: string, heading: string, content: string, operation: PatchOperation, options?: { occurrence?: number; expectedRevision?: string }) {
     const path = this.writable(input);
     if (options?.expectedRevision !== undefined || options?.occurrence !== undefined) throw unsupported("revision/occurrence-checked patches");
@@ -88,9 +88,9 @@ export class LocalRestBackend implements VaultBackend {
     const path = this.writable(input); if (expectedRevision !== undefined) throw unsupported("revision-checked patches");
     return this.client.patchFrontmatter(path, field, value, operation, createIfMissing);
   }
-  public async search(_query: SearchQuery): Promise<Awaited<ReturnType<VaultBackend["search"]>>> { throw unsupported("ACL-safe remote search"); }
-  public async rebuildSearchIndex(): Promise<{ indexedFiles: number; mode: string }> { throw unsupported("index rebuilds"); }
-  public async getActiveFile(): Promise<Awaited<ReturnType<Client["getActiveFile"]>>> { throw unsupported("authorizing the active file before reading its body"); }
+  public async search(_query: SearchQuery): Promise<Awaited<ReturnType<VaultBackend["search"]>>> { void _query; return await Promise.reject(unsupported("ACL-safe remote search")); }
+  public async rebuildSearchIndex(): Promise<{ indexedFiles: number; mode: string }> { return await Promise.reject(unsupported("index rebuilds")); }
+  public async getActiveFile(): Promise<Awaited<ReturnType<Client["getActiveFile"]>>> { return await Promise.reject(unsupported("authorizing the active file before reading its body")); }
   public async openFile(input: string) { return this.client.openFile(this.policy.authorize(input, "read")); }
   private writable(input: string): string { return this.policy.authorize(input, "write"); }
   private requireLegacyWrite(options?: WriteOptions): void {

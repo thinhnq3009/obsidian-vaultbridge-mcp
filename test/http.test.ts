@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
-import type http from "node:http";
+import http from "node:http";
+import { brotliCompressSync } from "node:zlib";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -79,6 +80,32 @@ describe("startHttpServer", () => {
       expect(result.tools.length).toBeGreaterThan(0);
     } finally { await client.close(); }
   });
+  it("rejects hostile Host/Origin and compressed JSON before parser/authenticated handlers", async () => {
+    const vault = await createTempVault(); vaults.push(vault);
+    const server = await startHttpServer(makeConfig({ vaultPath: vault, mcpHttpPort: 0, mcpAuthToken: "test-token" })); servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected TCP address");
+    const send = (headers: Record<string, string>, body: Buffer | string = "{") => new Promise<number>((resolve, reject) => {
+      const req = http.request({ hostname: "127.0.0.1", port: address.port, path: "/mcp", method: "POST", headers: { "content-type": "application/json", ...headers } }, (res) => { res.resume(); res.on("end", () => { resolve(res.statusCode!); }); });
+      req.on("error", reject); req.end(body);
+    });
+    // An invalid JSON body must never get parsed before Host/Origin/auth checks.
+    expect(await send({ host: "attacker.invalid" })).toBe(403);
+    expect(await send({ origin: "https://attacker.invalid", authorization: "Bearer test-token" })).toBe(403);
+    expect(await send({})).toBe(401);
+    expect(await send({ authorization: "Bearer wrong" })).toBe(401);
+    const benign = brotliCompressSync(Buffer.from('{"jsonrpc":"2.0","id":1,"method":"ping"}'));
+    expect(await send({ "content-encoding": "br", authorization: "Bearer test-token" }, benign)).toBe(415);
+    expect(await send({ "content-encoding": "gzip", authorization: "Bearer test-token" })).toBe(415);
+    expect(await send({ authorization: "Bearer test-token" }, "x".repeat(102401))).toBe(413);
+  });
+
+  it("rejects unacknowledged network exposure before initializing the backend", async () => {
+    const createApplication = vi.fn();
+    await expect(startHttpServer(makeConfig({ mcpHttpHost: "0.0.0.0", mcpAuthToken: "token" }), { createApplication })).rejects.toThrow(/TLS|proxy/);
+    expect(createApplication).not.toHaveBeenCalled();
+  });
+
 });
 
 const revisionToolNames = [
