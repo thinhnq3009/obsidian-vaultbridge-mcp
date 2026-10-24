@@ -57,7 +57,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
-    "chokidar": "^4.0.3",
+    "chokidar": "^6.0.0",
     "mdast-util-to-string": "^4.0.0",
     "minisearch": "^7.2.0",
     "proper-lockfile": "^4.1.2",
@@ -72,7 +72,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/express": "^5.0.6",
-    "@types/node": "^24.7.2",
+    "@types/node": "^26.6.5",
     "@types/proper-lockfile": "^4.1.4",
     "@vitest/coverage-v8": "^4.1.12",
     "eslint": "^10.2.0",
