@@ -56,7 +56,7 @@ describe("LocalRestBackend", () => {
         statusText: "Service Unavailable",
         headers: {},
         body: "nope",
-      })) as RequestLike,
+      })),
     });
 
     await expect(client.listFiles()).rejects.toMatchObject({
