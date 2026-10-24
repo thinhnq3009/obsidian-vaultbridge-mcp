@@ -5,6 +5,32 @@ published that version. Only a reviewed prerelease on a green CI revision may be
 published intentionally. Publication, merging, changing registry tags and a stable
 release are not performed by this task. Use disposable, non-sensitive vaults.
 
+## Current release status (verified 2026-10-24)
+
+Package preparation PR #25 is merged. The default branch is now `develop`;
+`develop@8d66c466800bad8d1243461b9885f90372c6f189` passed the six
+Ubuntu/macOS/Windows × Node 22.23.4/24.22.1 jobs and dependency audits in
+[CI run 40103029169](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40103029169).
+The [security workflow](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40103029160)
+also completed, but a successful analysis job is not a clean alert inventory.
+
+Three high-severity CodeQL alerts remain open on that exact develop revision:
+[temporary-file creation #1](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/security/code-scanning/1),
+[filesystem race #2](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/security/code-scanning/2),
+and [filesystem race #4](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/security/code-scanning/4).
+These are scanner findings requiring evidence-backed triage, not confirmed
+exploits. Resolve or document reviewed dispositions before publication. Issue
+[#23](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/23) remains open;
+source/runtime-policy remediation is merged, but actual deployment inventories
+and operational verification must not be inferred from source CI.
+
+Registry `alpha` and `latest` still point to `0.1.0-alpha.0`. The alpha.1 registry
+artifact, its provenance and post-publication smoke checks do not yet exist.
+Keep #5 open. Current candidate evidence is in
+[the release handoff](docs/releases/issue-5-validation.md); older Node 20 results
+in the historical artifact record do not establish current supported-runtime
+validation.
+
 ## Published alpha provenance (verified 2026-10-24)
 
 Registry query:
@@ -72,12 +98,12 @@ or index refresh time is promised.
 
 | Item | Current evidence and gate |
 | --- | --- |
-| K03: search read scopes / symlinks | Fixed on main by PR #21; `test/securityBoundaries.test.ts` and search tests cover both modes and scope/cache changes. |
-| K04: search freshness | Fixed on main by PR #22; `test/searchConsistency.test.ts` covers committed mutations, watcher ordering and failures. External edits with watchers off still require rebuild. |
+| K03: search read scopes / symlinks | Merged through PR #21; `test/securityBoundaries.test.ts` and search tests cover both modes and scope/cache changes. |
+| K04: search freshness | Merged through PR #22; `test/searchConsistency.test.ts` covers committed mutations, watcher ordering and failures. External edits with watchers off still require rebuild. |
 | #4: YAML integer precision | Closed with lossless comparison; `test/agentEditTimestamp.test.ts` covers adjacent unsafe integers, no-op controls, integral floats and key collisions (#8/#9). |
-| K06: Local REST enforcement | Implemented in this security branch (#17): read-only/scopes enforced before forwarding; remote search/active-file and atomic/revision promises fail closed. Canonical symlink checks require filesystem mode. |
-| Other known safety work | #16 merged through PR #24. This branch implements #14, #18, #19 and #20 plus source/runtime remediation for #23. Deployment inventories, Windows ACL checks, green CI/review and owner approval are release gates. |
-| Dependency advisories | Baseline production audit found 8 affected packages (1 critical, 3 high, 3 moderate, 1 low). Resolutions are refreshed within existing semver ranges; the SDK minimum is raised to 1.32.2; Vitest/coverage to 4.1.12 and tsx to 4.23.15 resolve the tooling advisories. Audit the reviewed lockfile and installed artifact before publishing. Audit success is not an exploitability or overall safety guarantee. |
+| K06: Local REST enforcement | Merged (#17): read-only/scopes enforced before forwarding; remote search/active-file and atomic/revision promises fail closed. Canonical symlink checks require filesystem mode. |
+| Other known safety work | #14, #16, #17, #18, #19 and #20 are closed with merged fixes; source/runtime-policy remediation for #23 is merged, while #23 remains open. Deployment inventories, Windows ACL checks, green CI/review and owner approval are release gates. |
+| Dependency advisories | Baseline production audit found 8 affected packages (1 critical, 3 high, 3 moderate, 1 low). The current candidate uses SDK 1.32.2+, Vitest/coverage 5.0.5+, Chokidar 6+, Express 5.3.0+ and tsx 4.23.15+. Review the current lockfile; the earlier Node 20 artifact record predates later dependency upgrades. Audit the reviewed lockfile and installed artifact before publishing. Audit success is not an exploitability or overall safety guarantee. |
 
 The README scopes its controls to filesystem mode. An alpha is for disposable
 pilot data; a production-safe or stable claim requires closing the above gates,
@@ -143,8 +169,10 @@ Use the new package spec in all client configurations. See MIGRATION.md.
 6. After npm.io updates, compare its indexed version, links and test indicator.
    Update the issue/task with observed outcomes, not a promised health score.
 
-The published-artifact checks for alpha.1, remote CI review, publisher provenance
-and npm.io refresh remain pending until the owner intentionally performs release.
+The published-artifact checks for alpha.1, publisher provenance and npm.io refresh
+remain pending until intentional owner-approved release. Current source CI is
+green; security alert triage, deployment evidence and final candidate review are
+still required.
 
 
 ## Security bundle release gate — issues #14, #17–#20 and #23

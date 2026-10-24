@@ -1,4 +1,70 @@
-# Issue #5 — release preparation handoff
+# Issue #5 — current release handoff
+
+Status: **PREPARED_RELEASE_BLOCKED** (2026-10-24). Package preparation PR #25 is
+merged; #5 remains open because alpha.1 is not published and security/release
+acceptance is pending. Default branch: `develop`.
+
+## Current source and artifact
+
+- Baseline: `develop@8d66c466800bad8d1243461b9885f90372c6f189`.
+- Packaged documentation refresh: `2e066e7`; application source and lockfile are
+  unchanged from that baseline. Evidence-only files under `docs/releases/` are
+  excluded from the published package.
+- Candidate: `obsidian-vaultbridge-mcp@0.1.0-alpha.1`, `alpha` publication intent,
+  installed legacy executable alias retained. Node policy:
+  `^22.23.4 || ^24.22.1`; Node 20 is no longer supported.
+- Fresh artifact/checksums and exact CI job links:
+  [issue-5-current-artifact.json](issue-5-current-artifact.json).
+  [issue-5-artifact.json](issue-5-artifact.json) is historical; do not reuse its
+  checksums or Node 20 results for the current candidate.
+
+## Verification
+
+Local Linux Node 24.22.1 / npm 11.19.1: `npm ci`, `npm run build`,
+`npm test -- --maxWorkers=2` (**495/495 tests, 23 suites**, V8 coverage),
+`npm run lint`, full/production `npm audit`, and installed-tarball npx smoke pass.
+Both audits report zero advisories at observation. Two fresh `npm pack --json`
+archives and `npm pack --dry-run --json` have identical integrity. Packed files
+match the explicit distribution allowlist. Smoke uses that recorded tarball in
+an independent installed consumer with a synthetic temporary vault/cache; both
+CLI names pass initialize/list/create/read/replace/stale-revision checks. The
+same recorded tarball also passes both CLI smoke checks on Linux Node 22.23.4 /
+npm 10.9.9; only Node 24 ran the full local suite.
+
+[Baseline CI run 40103029169](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40103029169)
+passed every Ubuntu/macOS/Windows × Node 22.23.4/24.22.1 job, including package
+smoke, and its separate dependency-audit job. Job/step metadata was inspected;
+log download returned no content, so per-job test counts/checksums are not
+claimed. This baseline run predates the packaged documentation refresh; final
+PR/release-head CI must be checked separately.
+
+## Remaining acceptance gates
+
+1. CodeQL analysis completed successfully but **three high alerts remain open**
+   on the baseline: [#1 temporary-file creation](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/security/code-scanning/1),
+   [#2 filesystem race](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/security/code-scanning/2)
+   and [#4 filesystem race](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/security/code-scanning/4).
+   Resolve or record reviewed, evidence-backed dispositions before publication;
+   the alert inventory is not proof of exploitable vulnerabilities.
+2. #14/#16/#17/#18/#19/#20 and #4 are closed with merged changes. #23 remains
+   open despite merged source/runtime-policy remediation. The owner reports
+   **no deployments** on 2026-10-24, so no production runtime upgrade or deployed
+   exposure verification is claimed. Reassess runtime, ingress and ACLs before
+   a future deployment. Record #23 acceptance explicitly.
+3. Review the final candidate and require green CI on the intended release SHA.
+   Publish only with an intentional owner decision and supported provenance.
+   No npm publication, merge, release tag or registry-tag change was performed.
+4. Registry `alpha` and `latest` still point to `0.1.0-alpha.0`. After intentional
+   alpha.1 publication, verify source/provenance/integrity and run the registry
+   smoke on Node 22.23.4 and 24.22.1 using both the version and alpha tag.
+5. [npm.io](https://npm.io/package/obsidian-vaultbridge-mcp) still indexes alpha.0,
+   B 65/100, README present, tests/stable absent. Its recognition algorithm is
+   unverified; do not promise a score change or pack internal tests for a badge.
+   Exact historical alpha.0 publisher source attestation remains unavailable.
+
+## Historical preparation and CI repair evidence
+
+The following sections are retained as dated history of PR #25. Their statements about an open PR, main as default, pending merges and Node 20 support are superseded by the current handoff above. Checksums identify those older artifacts only.
 
 Status: IMPLEMENTED_AWAITING_REVIEW. Delivery is on [PR #25](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/pull/25), which remains open. No merge, tag change or publication.
 
