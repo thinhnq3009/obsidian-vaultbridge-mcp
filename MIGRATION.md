@@ -32,3 +32,13 @@ VAULT_PATH=C:/Users/me/Documents/My Vault
 ## Temporary compatibility mode
 
 Set `BACKEND=local-rest` and retain the old API settings to migrate incrementally. Local REST compatibility is deprecated and intended to be removed after the 1.x release line.
+
+Local REST now enforces `READ_ONLY`, read/write scopes and protected paths before
+forwarding. Search and active-file reads return `UNSUPPORTED_CAPABILITY` because
+the adapter cannot authorize them before remote note processing. Atomic moves,
+recursive/folder deletion, create/replace modes, revision-checked writes and
+occurrence-specific patches are also unsupported instead of silently ignoring
+guarantees. Direct authorized reads, metadata, listing, open-file and legacy
+writes without those options remain available. Remote filesystem canonicalization
+is controlled by the Obsidian plugin; use the filesystem backend for canonical
+symlink containment and the complete safety contract.
