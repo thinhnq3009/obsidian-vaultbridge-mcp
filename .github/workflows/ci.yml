@@ -23,3 +23,5 @@ jobs:
       - run: npm test
       - run: npm run lint
       - run: npm pack --dry-run
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm run smoke:package

@@ -1,3 +1,5 @@
+import fs from "node:fs";
+
 import { McpServer, type ToolCallback } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { AnySchema, ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
@@ -22,7 +24,8 @@ export async function createApplication(config: AppConfig): Promise<ApplicationC
 type McpServerOptions = { colorfulLogs?: boolean };
 
 export function createMcpServer(backend: VaultBackend, options: McpServerOptions = {}) {
-  const server = new McpServer({ name: "obsidian-vault-mcp", version: "1.0.0" });
+  const { name, version } = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { name: string; version: string };
+  const server = new McpServer({ name, version });
   installToolCallLogging(server, options);
   for (const registerTool of toolRegistrars) registerTool(server, backend);
   return server;
