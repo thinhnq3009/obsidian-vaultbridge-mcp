@@ -1,4 +1,27 @@
-# Prerelease preparation and evidence — issue #5
+# v0.1.0 — first public release readiness (DRAFT, NOT PUBLISHED)
+
+> Source preparation branch: `release/v0.1.0`; track [release issue #38](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/38). No release tag, npm publication or stable deployment is implied by this branch. OAuth/SQLite/login UI is planned for v0.2.0 in [#39](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/39).
+
+## Non-negotiable release gates
+
+1. **Security:** GitHub CodeQL alerts [#1](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/security/code-scanning/1), [#2](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/security/code-scanning/2), [#4](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/security/code-scanning/4) remained open HIGH on develop at inspection 2026-10-25. Resolve them or record a reviewable disposition grounded in source and regression evidence; green analysis alone does not clear the alerts. Ensure issue #23 acceptance remains closed.
+2. **Release SHA:** Merge reviewed `develop` changes into `main` via release PR only after gates; confirm `package.json` and lockfile both say `0.1.0`, `publishConfig.tag=latest`, README client examples, changelog, supported Node (`^22.23.4 || ^24.22.1`) and no accidental OAuth claims.
+3. **CI:** on the final intended SHA, require Ubuntu/macOS/Windows × supported patched Node minimums green with `npm ci`, build, lint, coverage tests, full and production audit, package dry run and installed-tarball CLI smoke against disposable vaults. Verify no secrets, user vault content, caches, or unintended source files in package.
+4. **Review:** confirm real note/Canvas read/write/search, scoped authorization, stale revision rejection, symlink/path/TOCTOU regression, and both CLI aliases from the packed tarball. Review source-to-artifact integrity and npm provenance/trusted publishing setup.
+5. **Owner-approved publication only:** from clean reviewed `main` checkout and trusted provenance environment, publish `npm publish --tag latest --provenance`; do not expose npm publish secrets to PR builds. Creating a GitHub release alone does **not** publish npm. If trusted publishing cannot be configured, stop rather than silently omitting provenance.
+6. **Verify live artifact:** `npm view obsidian-vaultbridge-mcp@0.1.0 gitHead dist --json`, `npm view obsidian-vaultbridge-mcp dist-tags --json`, registry tarball integrity/attestation, and on supported Node versions `npx -y obsidian-vaultbridge-mcp@0.1.0 --vault /path/to/disposable-vault`. Confirm downstream Codex/Claude/Cursor STDIO handshake and filesystem tool round trip.
+7. **Tag and release:** tag exact published `main` SHA as `v0.1.0`, create a normal (non-prerelease) GitHub release with limitations and migration notes, update Obsidian release evidence and close issue #38 only after npm+GitHub artifacts are verified.
+
+## Publication status
+
+- v0.1.0: **not published**; package files in this draft branch are preparation only.
+- v0.1.0-alpha.1: prepared in source, **not published** at last verified observation.
+- v0.1.0-alpha.0: historically published, not equivalent to current reviewed source.
+- Existing HTTP Bearer token/STDIO are current functionality; OAuth 2.1 is not part of v0.1.0.
+
+---
+
+## Historical alpha preparation and evidence — issue #5
 
 This repository prepares `obsidian-vaultbridge-mcp@0.1.0-alpha.1`; it has not
 published that version. Only a reviewed prerelease on a green CI revision may be
