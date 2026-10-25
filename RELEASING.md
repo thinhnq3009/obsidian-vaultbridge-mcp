@@ -1,4 +1,48 @@
-# Prerelease preparation and evidence — issue #5
+# v0.1.0 — publication procedure and evidence
+
+> Source preparation branch: `release/v0.1.0`; track [release issue #38](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/38). No release tag, npm publication or stable deployment is implied by this branch. OAuth/SQLite/login UI is planned for v0.2.0 in [#39](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/39).
+
+## Non-negotiable release gates
+
+1. **Security:** CodeQL alerts #1, #2 and #4 were verified `fixed` on 2026-10-25 after PRs #42/#44. Candidate `b38cf918314bcd2016a135ded8ba6302ccd85c9c` passed [six-platform CI](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40208154561) and [security analysis](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40208154569). Recheck open alerts and final main SHA before publication. Issue #23 acceptance is closed.
+2. **Release SHA:** Merge reviewed `develop` changes into `main` via release PR only after gates; confirm `package.json` and lockfile both say `0.1.0`, `publishConfig.tag=latest`, README client examples, changelog, supported Node (`^22.23.4 || ^24.22.1`) and no accidental OAuth claims.
+3. **CI:** on the final intended SHA, require Ubuntu/macOS/Windows × supported patched Node minimums green with `npm ci`, build, lint, coverage tests, full and production audit, package dry run and installed-tarball CLI smoke against disposable vaults. Verify no secrets, user vault content, caches, or unintended source files in package.
+4. **Review:** confirm real note/Canvas read/write/search, scoped authorization, stale revision rejection, symlink/path/TOCTOU regression, and both CLI aliases from the packed tarball. Review source-to-artifact integrity and npm provenance/trusted publishing setup.
+5. **Owner-approved publication only:** from clean reviewed `main` checkout and trusted provenance environment, publish `npm publish --tag latest --provenance`; do not expose npm publish secrets to PR builds. Creating a GitHub release alone does **not** publish npm. If trusted publishing cannot be configured, stop rather than silently omitting provenance.
+6. **Verify live artifact:** `npm view obsidian-vaultbridge-mcp@0.1.0 gitHead dist --json`, `npm view obsidian-vaultbridge-mcp dist-tags --json`, registry tarball integrity/attestation, and on supported Node versions `npx -y obsidian-vaultbridge-mcp@0.1.0 --vault /path/to/disposable-vault`. Confirm downstream Codex/Claude/Cursor STDIO handshake and filesystem tool round trip.
+7. **Tag and release:** tag exact published `main` SHA as `v0.1.0`, create a normal (non-prerelease) GitHub release with limitations and migration notes, update Obsidian release evidence and close issue #38 only after npm+GitHub artifacts are verified.
+
+## Publication status
+
+- v0.1.0: consult [npm](https://www.npmjs.com/package/obsidian-vaultbridge-mcp) and [GitHub Releases](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/releases) for live publication status. Source preparation alone does not establish a published artifact.
+- v0.1.0-alpha.1: prepared in source, **not published** at last verified observation.
+- v0.1.0-alpha.0: historically published, not equivalent to current reviewed source.
+- Existing HTTP Bearer token/STDIO are current functionality; OAuth 2.1 is not part of v0.1.0.
+
+---
+
+## Trusted publishing workflow
+
+The manual `Publish npm` workflow in `.github/workflows/publish.yml` publishes
+only `obsidian-vaultbridge-mcp@0.1.0`. Configure an npm GitHub Actions trusted
+publisher for owner `thinhnq3009`, repository `obsidian-vaultbridge-mcp`, workflow
+filename `publish.yml`, no environment name, and direct publish permission.
+No npm token is used. See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
+
+Merge the reviewed release PR into main and sync main back into develop so the
+manual workflow is discoverable on the default branch. Wait for CI and Security
+analysis on the exact main SHA, then dispatch `publish.yml` with ref `main` and
+input `sha` equal to that full SHA. The workflow rejects other refs/versions,
+requires green main CI/security and no open HIGH/CRITICAL alerts, reruns local
+checks, publishes with provenance, checks registry source/integrity/attestation,
+and installs the registry package on both supported Node versions. Create the
+GitHub tag/release only after these jobs succeed. A failed post-publication
+check requires investigation; a published version cannot be overwritten.
+
+The following alpha sections are historical snapshots; their outstanding-gate
+and dist-tag statements describe the dated observations, not live state.
+
+## Historical alpha preparation and evidence — issue #5
 
 This repository prepares `obsidian-vaultbridge-mcp@0.1.0-alpha.1`; it has not
 published that version. Only a reviewed prerelease on a green CI revision may be
