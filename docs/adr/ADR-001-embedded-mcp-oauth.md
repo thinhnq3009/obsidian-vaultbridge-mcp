@@ -6,6 +6,15 @@
 - Target: `v0.2.0-alpha.0`; first public `v0.1.0` release [#38](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/38) stays isolated
 - This ADR is NOT evidence of a working OAuth implementation or passing CI.
 
+## Library selection — final owner decision (2026-10-25)
+
+**APPROVED AND LOCKED: Better Auth** is the primary authentication and OAuth authorization-server framework for VaultBridge v0.2.0. Do not reopen a Better Auth vs. custom OAuth implementation comparison in AUTH-001. Do not substitute a home-grown authorization/token/PKCE layer without a separate documented technical blocker and owner approval.
+
+- OAuth/MCP: `better-auth` + `@better-auth/mcp` + `@better-auth/cimd`, plus its maintained JWT support according to compatible upstream packages. Confirm exact plugin APIs and package versions by installation/tests before applying implementation code.
+- Application-owned features: loopback-only first-run setup, small login/consent/admin UI, SQLite file placement/migrations, vault-to-user/client grants, per-request authorization bridge. SQLite driver remains under compatibility test; `node:sqlite` preferred only if supported runtime tests pass.
+- Security: never duplicate library OAuth endpoints with manually coded flows, never weaken `MCP_AUTH_TOKEN` compatibility/STDIO or existing filesystem protections.
+- AUTH-001 moves from **library selection** to **Better Auth integration and interoperability feasibility**. If version, license, security or Node compatibility blocks adoption, record reproducible evidence and escalate before changing framework; do not silently switch libraries.
+
 ## Decision
 
 Build the OAuth authorization server **inside the local MCP application process** using maintained components rather than manually implementing OAuth or cryptography:
