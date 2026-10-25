@@ -87,3 +87,40 @@ The OAuth mode MUST fail closed if issuer/resource URL, TLS, first-run owner set
 - [Better Auth 1.7 upgrade](https://better-auth.com/docs/guides/1-7-upgrade-guide) — MCP plugin and SDK v2
 - [Official MCP SDK v2](https://ts.sdk.modelcontextprotocol.io/v2/)
 - [SDK migration](https://ts.sdk.modelcontextprotocol.io/v2/migration/upgrade-to-v2) — codemod/manual changes/protocol cutover
+
+## AUTH-001 implementation spike — verified 2026-10-26
+
+The isolated executable proof lives in `scripts/spikes/better-auth-sdk-v2/`; it has its own exact-version `package.json` and lockfile and is not imported by the production application. It starts an ephemeral Express listener bound to `127.0.0.1`, creates a temporary `better-sqlite3` database in WAL mode under the OS temp directory, runs Better Auth's supported `auth.$context.runMigrations()` operation, and removes the database at exit. Public sign-up is disabled. No project dependency or lockfile, static-token path, STDIO path, or release workflow was changed.
+
+Latest package registry versions and compatibility metadata were rechecked on 2026-10-26. Exact spike dependency versions:
+
+| Package | Exact version | Compatibility evidence |
+|---|---:|---|
+| `better-auth` | `1.7.13` | ESM; optional framework/adapter peer dependencies; minimum Node not declared |
+| `@better-auth/mcp` | `1.7.13` | peers `better-auth ^1.7.13`, `@better-auth/core ^1.7.13`, `better-call 1.4.4`; resolves OAuth provider `^1.7.13` |
+| `@better-auth/cimd` | `1.7.13` | same Better Auth/core peers and OAuth provider `^1.7.13`; separate `./node` export |
+| `@better-auth/oauth-provider` | `1.7.13` | transitively installed by MCP/CIMD; not separately registered as a plugin |
+| `@modelcontextprotocol/server` | `2.4.0` | Node `>=20`; ESM and CJS exports |
+| `@modelcontextprotocol/express` | `2.0.2` | Node `>=20`; Express `^4.18 || ^5`, SDK server `^2.3` peers |
+| `@modelcontextprotocol/node` | `2.1.2` | Node `>=20`; SDK server `^2.4` peer |
+| `@modelcontextprotocol/codemod` | `2.4.0` | Node `>=20`; published official migration tool |
+| `better-sqlite3` | `13.0.3` | Node `>=22`; selected for the isolated spike |
+| `express` | `5.3.0` | Express 5-compatible SDK adapter peer |
+
+The committed isolated lockfile resolves and installs successfully on Node `22.23.4` and `24.22.1`. Both smoke runs use bundled SQLite `3.53.4`: Better Auth serves the RFC 9728 protected-resource document at `/.well-known/oauth-protected-resource/mcp` and RFC 8414 authorization-server metadata at the URL discovered from that document; metadata advertises CIMD support. The SDK v2 `createMcpHandler(..., { legacy: "reject" })` composes with Better Auth's `requireMcpAuth`; missing Bearer credentials are rejected with 401 and a `WWW-Authenticate` resource-metadata challenge. A disposable database is initialized with Better Auth plugin migrations, including JWT and OAuth tables.
+
+The package registry reports the SDK v2 packages require Node `>=20` and `better-sqlite3` requires Node `>=22`, so both repository engine floors (`22.23.4` and `24.22.1`) satisfy their declared engine ranges. The POC passed on **both Node `22.23.4` and `24.22.1` on Linux** after installing the package lock independently on each runtime; both runs used SQLite `3.53.4`, WAL, Better Auth schema migrations, OAuth metadata and unauthenticated-resource challenge. This is not a Windows/macOS verification, nor does it prove Better Auth's minimum Node version (its manifest declares none). `node:sqlite` was briefly probed on 22.23.4 but emits Node's experimental-feature warning, so it is not selected. **Spike adapter decision: use the pinned `better-sqlite3` driver**, subject to matrix CI and native-addon packaging review before production use.
+
+**Not implemented or claimed:** browser login/consent pages, safe one-time owner bootstrap, successful Authorization Code + PKCE exchange, token-to-tool success, refresh/revocation, malicious redirect/scope/client tests, wrong issuer/audience, or CIMD SSRF negative cases. These are blocked on AUTH-002 account/bootstrap/UI and additional AUTH-003 provider test work. `fetchClientMetadataResource` is Better Auth's published Node transport, which promises DNS resolve-once checks/pinning and no redirect following; application-level metadata URL policy still needs explicit tests before remote use. This partial smoke test is not ChatGPT interoperability evidence.
+
+**SDK v1 → v2 findings:** do not change production handlers by import substitution. v2 uses `@modelcontextprotocol/server` and its per-request `createMcpHandler` model; v2 docs prescribe `legacy: "reject"` for a strict 2026-07-28 route. The existing `McpServer` tool registration wrappers, callback extra arguments, HTTP transport lifecycle/error handling, STDIO adapter, and legacy client/protocol expectations still require targeted migration and regression tests. The official `@modelcontextprotocol/codemod@2.4.0` CLI was inspected and run with `v1-to-v2 --dry-run` against this source tree: it proposed 33 changes across 14 files, warned on four manual migration issues in `src/server.ts` (removed `zod-compat` types, `RequestHandlerExtra`/`ServerContext` changes and context-property remapping), and proposed package dependency changes. Dry-run did not write files. This is evidence the codemod is useful as a reviewed assistant but **not safe to apply wholesale without manual repair and the regression matrix**. Existing Host/Origin, request-size, throttle, `MCP_AUTH_TOKEN`, vault path, read-only and atomic revision defenses remain in the unchanged production v1 path.
+
+**Security/audit:** `npm audit --audit-level=high` for the isolated spike dependency tree reported zero vulnerabilities on 2026-10-26. This is a point-in-time registry audit, not an independent code audit or guarantee of absence. CIMD is untrusted remote metadata: enforce strict URL policy and the library's DNS pinning/redirect guarantees. The local spike uses a throwaway secret and does not expose registration, setup, or a public listener.
+
+### Scope boundary for follow-up
+
+- AUTH-002: owner-only local bootstrap, account persistence lifecycle, login/consent UI, and non-public test-user setup.
+- AUTH-003: real Better Auth authorization-code + PKCE, CIMD client resolution, resource/audience verification, refresh rotation/revoke, and protocol-negative tests using a separate disposable DB.
+- AUTH-004: immutable request-scoped principal/client/vault context and authorization intersection; no shared mutable identity on the backend.
+- SDK migration PR: separately migrate production HTTP/STDIO with the official codemod only as a reviewed aid; preserve v1/static mode until explicit compatibility and security tests pass.
+- AUTH-005: generic OAuth MCP client E2E, matrix CI, release docs; test ChatGPT only if an actual supported connection succeeds.
