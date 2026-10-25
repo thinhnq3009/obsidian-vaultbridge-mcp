@@ -62,8 +62,10 @@ try {
   const installed = path.join(consumer, "node_modules", canonical);
   const manifest = JSON.parse(await fs.readFile(path.join(installed, "package.json"), "utf8")) as Manifest;
   assert.equal(manifest.name, canonical);
-  assert.match(manifest.version, /^\d+\.\d+\.\d+-alpha\.\d+$/u);
-  assert.equal(manifest.publishConfig.tag, "alpha");
+  // Validate the actual npm release channel without tying this smoke to alpha-only versions.
+  assert.match(manifest.version, /^\d+\.\d+\.\d+(?:-alpha\.\d+)?$/u);
+  const isAlpha = /-alpha\.\d+$/u.test(manifest.version);
+  assert.equal(manifest.publishConfig.tag, isAlpha ? "alpha" : "latest");
   assert.equal(manifest.repository.url, `git+${repository}.git`);
   assert.equal(manifest.homepage, `${repository}#readme`);
   assert.equal(manifest.bugs.url, `${repository}/issues`);
@@ -74,8 +76,8 @@ try {
     assert((await fs.stat(path.join(installed, entry))).isFile(), `Missing package entry: ${entry}`);
   }
   const readme = await fs.readFile(path.join(installed, "README.md"), "utf8");
-  assert(readme.includes(`npx ${canonical}@alpha`));
-  assert(readme.includes("Early preview"));
+  assert(readme.includes(`npx ${canonical}@${isAlpha ? "alpha" : manifest.version}`));
+  assert(readme.includes(isAlpha ? "Early preview" : `v${manifest.version}`));
   for (const executable of [canonical, legacy]) {
     assert.equal(manifest.bin[executable], "./dist/index.js");
     const cli = path.join(installed, manifest.bin[executable]);
