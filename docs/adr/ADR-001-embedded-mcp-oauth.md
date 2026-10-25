@@ -1,0 +1,80 @@
+# ADR-001 — Embedded MCP OAuth, SQLite and SDK v2
+
+- Status: **ACCEPTED architecture / IMPLEMENTATION SPIKE IN PROGRESS** (2026-10-25)
+- Issue: [AUTH-001 #45](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/45), parent [#39](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/39)
+- Source baseline: `develop@98b33c8b84f8d7c475a11ed1916fbb88c4c7376b`
+- Target: `v0.2.0-alpha.0`; first public `v0.1.0` release [#38](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/38) stays isolated
+- This ADR is NOT evidence of a working OAuth implementation or passing CI.
+
+## Decision
+
+Build the OAuth authorization server **inside the local MCP application process** using maintained components rather than manually implementing OAuth or cryptography:
+
+| Component | Decision | Owner |
+|---|---|---|
+| OAuth, authorization codes, PKCE, token & consent | `better-auth` and `@better-auth/mcp` | Upstream library |
+| Client metadata | `@better-auth/cimd` with `metadataProfile: "mcp-2026-07-28"` | Upstream library |
+| Signing / JWT keys | Better Auth `jwt()` plugin | Upstream library |
+| MCP stateless HTTP and STDIO | `@modelcontextprotocol/server` v2; optional official Express / Node adapters | Official MCP SDK |
+| Local persistence | SQLite under per-user OS app-data, outside vault; test `node:sqlite` on required Node matrix before choosing driver | VaultBridge |
+| Login, consent, owner bootstrap, UI | Minimal first-party pages | VaultBridge |
+| Per-principal/client/tool/path ACL | First-party policy bridge, intersecting global VaultAccessPolicy | VaultBridge |
+
+The existing repository uses `@modelcontextprotocol/sdk ^1.32.2` and a stateless `StreamableHTTPServerTransport` per request. Merely changing imports to SDK v2 **does not enable** the 2026-07-28 protocol: use `createMcpHandler(..., { legacy: "reject" })` for the new HTTP path and `serveStdio` where appropriate, and explicitly validate any old-client compatibility requirements. Preserve the current `src/http.ts` Host/Origin/request-budget/content-encoding controls around handlers. Migration should follow the upstream codemod only in an isolated branch, then repair custom tool registration wrappers and tests manually.
+
+**Do not register `oauthProvider()` alongside `mcp()`**; MCP plugin is already the OAuth provider. The JWT plugin is mandatory. Prefer CIMD; Dynamic Client Registration is *disabled* by default. When old client compatibility requires DCR, enable it only as an explicit operator-controlled mode after negative tests, without weakening redirect validation.
+
+## Interface / modes
+
+| Mode | Transport | Identity / setup | Default exposure |
+|---|---|---|---|
+| `stdio` | Existing stdio, unchanged | Local process trust, no OAuth | local only |
+| `http-static` | Current HTTP + `MCP_AUTH_TOKEN` | Static Bearer for compatibility | loopback; network requires existing allowlist + TLS proxy controls |
+| `http-oauth` | SDK v2 stateless HTTP POST + protected-resource challenge | OAuth Authorization Code + PKCE S256, Better Auth users/clients/grants | loopback by default, explicit HTTPS proxy/tunnel remote |
+
+The OAuth mode MUST fail closed if issuer/resource URL, TLS, first-run owner setup or signing keys are invalid. Never silently fall back to static token or unauthenticated MCP. Avoid public `/setup` or `/admin` routes. Serve metadata under spec-mandated well-known URLs and the provider under `/oauth2/*`; route shape is verified by plugin integration tests rather than hand-coded equivalents.
+
+## Resource and principal safety boundary
+
+1. Token verification binds issuer, audience / resource (canonical `https://host/mcp`), expiry and scope. Scope approval and refresh/revocation are durable.
+2. Build immutable per-request context `{ principalId, clientId, grantId, vaultId, scopes }`.
+3. Effective authorization: `global policy ∩ user vault grants ∩ consented client scopes ∩ tool/action/path permissions`; fail closed.
+4. Search/list/index results and cache must use the same scope. Keep filesystem symlink/path/revision and read-only defenses.
+5. No mutable singleton principal on `ApplicationContext` or `VaultBackend`. Binding a shared backend to one request's identity would leak privileges across concurrent requests.
+6. SQLite/JWT keys must not be in Obsidian vault, tool responses, git or packaged tarball.
+
+## Threat model / gate
+
+- Network setup takeover before admin is enrolled; explicitly loopback-only one-time bootstrap, not unauthenticated signup on remote address.
+- OAuth redirect/client metadata SSRF, account mix-up, forged token and callback, PKCE downgrade, code replay, refresh rotation reuse; prefer maintained defaults and test against malicious inputs.
+- Tunnel/proxy changes `Host`, `Origin`, scheme or client URL: validate a single canonical HTTPS issuer/resource and deployment allowlist.
+- Cross-client vault leakage and concurrent request policy races.
+- Browser CSRF, session fixation, cookie settings and password brute-force.
+- Old MCP static-token mode no longer secure merely because OAuth is added: keep hardening and migration docs.
+
+## Spike execution and criteria
+
+1. Run `node scripts/spikes/oauth-sqlite-preflight.mjs` locally and in CI on **supported Node 22.23.4 and 24.22.1** on Ubuntu/macOS/Windows. It uses a disposable temporary SQLite DB and leaves no user data. It proves only that the runtime can use SQLite WAL and perform atomic one-time code consumption; **it is not an OAuth implementation**.
+2. Pin compatible Better Auth / MCP v2 dependencies in an isolated branch. Run package lockfile audit, build and dependency license check; no version assumption without installing.
+3. Run an end-to-end disposable-server flow: discovery → browser owner login → consent → code + PKCE → resource-bound access token → MCP tool → refresh → revoke. Verify 401 challenge and wrong audience/scope/redirect/PKCE fail.
+4. Repeat over a generic MCP OAuth client, remote HTTPS proxy where applicable, and ChatGPT only if the account client capability allows.
+5. Run existing STDIO, static Bearer, filesystem security regressions on six Node/OS CI configurations before implementation PR merge.
+
+## Implementation delivery
+
+- **AUTH-001** [#45](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/45): ADR, runtime feasibility, SDK migration plan.
+- **AUTH-002** [#46](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/46): SQLite persistent accounts and local owner UI.
+- **AUTH-003** [#47](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/47): MCP OAuth provider and token lifecycle.
+- **AUTH-004** [#48](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/48): Request-scoped authorization.
+- **AUTH-005** [#49](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/49): Generic client E2E, HTTPS guide and controlled release.
+
+**Rollback:** These features remain behind an explicit mode until reviewed. Release 0.1.x can use original code/lockfile unmodified; operator can keep stdio/static mode if OAuth beta is unsuitable.
+
+## Upstream docs (verified 2026-10-25)
+
+- [Better Auth MCP](https://better-auth.com/docs/plugins/mcp) — `mcp()`, `cimd()`, token challenge and metadata
+- [Better Auth OAuth provider](https://better-auth.com/docs/plugins/oauth-provider) — grants, redirect/PKCE and CIMD/DCR
+- [Better Auth SQLite](https://better-auth.com/docs/adapters/sqlite) — `node:sqlite` / better-sqlite3
+- [Better Auth 1.7 upgrade](https://better-auth.com/docs/guides/1-7-upgrade-guide) — MCP plugin and SDK v2
+- [Official MCP SDK v2](https://ts.sdk.modelcontextprotocol.io/v2/)
+- [SDK migration](https://ts.sdk.modelcontextprotocol.io/v2/migration/upgrade-to-v2) — codemod/manual changes/protocol cutover
