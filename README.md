@@ -2,7 +2,7 @@
 
 Standalone MCP server for reading, writing, searching, and managing an Obsidian vault directly through the filesystem. Obsidian and the Local REST API plugin do not need to be installed or running.
 
-> **Early preview: `0.1.0-alpha.1` (release candidate, not yet published).** Use a disposable, non-sensitive test vault. This is a prerelease, not a production-safety or stable-release claim. This branch implements Local REST policy enforcement, protected paths, bounded regex, private cache, HTTP hardening and patched runtime gates. Deployment inventory, Windows ACL review and owner release approval remain required. See [release gates](./RELEASING.md).
+> **v0.1.0 first public release candidate — NOT YET PUBLISHED.** This branch prepares an installable release for local MCP clients; publication is blocked until release/security gate #38 is reviewed. Use only a disposable, non-sensitive test vault during release preparation. This version does **not** include OAuth, embedded SQLite, or a login UI (planned for v0.2.0). See [release gates](./RELEASING.md).
 
 [![CI](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/workflows/ci.yml)
 
@@ -16,23 +16,23 @@ The filesystem backend is standalone-first. The former Local REST integration re
 ## Quick start
 
 ```bash
-npx obsidian-vaultbridge-mcp@alpha
+npx obsidian-vaultbridge-mcp@0.1.0
 ```
 
 The server auto-detects a single open Obsidian vault from Obsidian's local registry. If detection is ambiguous, pass the vault explicitly:
 
 ```bash
-npx obsidian-vaultbridge-mcp@alpha --vault "C:/Users/me/Documents/My Vault"
+npx obsidian-vaultbridge-mcp@0.1.0 --vault "C:/Users/me/Documents/My Vault"
 ```
 
 Environment equivalent override:
 
 ```bash
 VAULT_PATH=C:/Users/me/Documents/My Vault
-npx obsidian-vaultbridge-mcp@alpha
+npx obsidian-vaultbridge-mcp@0.1.0
 ```
 
-As verified on 2026-10-24, the `alpha` tag serves `0.1.0-alpha.0`; these commands will pick up the next prerelease only after intentional publication. For a fixed version, replace `@alpha` with the version you reviewed. The published artifact does not contain this source patch: until release, build this branch and run `node /absolute/path/to/dist/index.js --vault /path/to/test-vault`.
+**Not yet published:** The `@0.1.0` examples above are intended for use **only after** the npm release is approved and verified. Until then, the registry still serves the older `alpha.0` artifact (last checked 2026-10-24). For source testing, build this branch and run `node /absolute/path/to/dist/index.js --vault /path/to/test-vault` with a disposable vault. Once published, `@latest` will point to `0.1.0` only after verifying npm dist-tags.
 
 The default transport is STDIO. Obsidian, API keys, certificates, and REST endpoints are not required.
 
@@ -92,7 +92,7 @@ CLI arguments override `.env` and environment values:
 [mcp_servers.obsidian_vault]
 enabled = true
 command = "npx"
-args = ["-y", "obsidian-vaultbridge-mcp@alpha", "--vault", "C:/Users/me/Documents/My Vault"]
+args = ["-y", "obsidian-vaultbridge-mcp@0.1.0", "--vault", "C:/Users/me/Documents/My Vault"]
 ```
 
 When Obsidian has exactly one open vault recorded locally, the `--vault` argument can be omitted.
@@ -104,7 +104,7 @@ When Obsidian has exactly one open vault recorded locally, the `--vault` argumen
   "mcpServers": {
     "obsidian-vault": {
       "command": "npx",
-      "args": ["-y", "obsidian-vaultbridge-mcp@alpha", "--vault", "C:/Users/me/Documents/My Vault"]
+      "args": ["-y", "obsidian-vaultbridge-mcp@0.1.0", "--vault", "C:/Users/me/Documents/My Vault"]
     }
   }
 }
@@ -282,14 +282,14 @@ read/patch/write workaround or claim filesystem atomicity for this adapter.
 ## HTTP mode
 
 ```bash
-npx obsidian-vaultbridge-mcp@alpha --vault "C:/Vault" --http
+npx obsidian-vaultbridge-mcp@0.1.0 --vault "C:/Vault" --http
 ```
 
 Binding to a non-loopback host requires authentication, an explicit Host allowlist and a trusted TLS proxy:
 
 ```bash
 MCP_HTTP_TLS_PROXY=true MCP_ALLOWED_HOSTS=mcp.example.com \
-  npx obsidian-vaultbridge-mcp@alpha --vault "C:/Vault" --http --host 0.0.0.0 --auth-token "replace-with-a-secret"
+  npx obsidian-vaultbridge-mcp@0.1.0 --vault "C:/Vault" --http --host 0.0.0.0 --auth-token "replace-with-a-secret"
 ```
 
 Clients must send `Authorization: Bearer <token>`.
@@ -297,7 +297,7 @@ Clients must send `Authorization: Bearer <token>`.
 ## Local REST migration backend
 
 ```bash
-npx obsidian-vaultbridge-mcp@alpha \
+npx obsidian-vaultbridge-mcp@0.1.0 \
   --backend local-rest \
   --api-key "your-key" \
   --base-url "https://127.0.0.1:27124"
