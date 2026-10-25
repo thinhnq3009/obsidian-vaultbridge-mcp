@@ -13,6 +13,7 @@ import { normalizeVaultPathInput, VaultError } from "../types.js";
 import { VaultAccessPolicy } from "./accessPolicy.js";
 import { agentEditField, prepareAgentEdit } from "./agentEditTimestamp.js";
 import { parseMetadata, patchFrontmatterContent, patchHeadingContent } from "./markdown.js";
+import { ensurePrivateDirectory } from "./privateCache.js";
 import { VaultSearchService } from "./search.js";
 import type { BackendCapabilities, BackendStatus, NoteEdits, NoteEditsResult, PathStat, SearchQuery, SearchResponse, VaultBackend, WriteOptions } from "./types.js";
 
@@ -319,11 +320,13 @@ export class FilesystemVaultBackend implements VaultBackend {
   }
 
   private async withPathLock<T>(relative: string, callback: () => Promise<T>): Promise<T> {
-    const lockDir = path.join(this.config.cacheDir, "locks");
-    await fs.mkdir(lockDir, { recursive: true });
+    await ensurePrivateDirectory(this.config.cacheDir);
+    const lockDir = path.join(await fs.realpath(this.config.cacheDir), "locks");
+    await ensurePrivateDirectory(lockDir);
     const target = path.join(lockDir, createHash("sha256").update(`${this.vaultRealPath}:${relative}`).digest("hex"));
-    await fs.writeFile(target, "", { flag: "a" });
-    const release = await lockfile.lock(target, { retries: { retries: 20, minTimeout: 25, maxTimeout: 250 }, stale: 15_000, update: 5_000, realpath: true });
+    // proper-lockfile atomically creates `${target}.lock`; the target itself
+    // need not exist. Avoid creating or following a predictable sentinel file.
+    const release = await lockfile.lock(target, { retries: { retries: 20, minTimeout: 25, maxTimeout: 250 }, stale: 15_000, update: 5_000, realpath: false });
     try {
       return await callback();
     } finally {
