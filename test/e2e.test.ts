@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -11,6 +12,20 @@ const cleanup: string[] = [];
 afterEach(async () => { for (const target of cleanup.splice(0)) await fs.rm(target, { recursive: true, force: true }); });
 
 describe("standalone STDIO server", () => {
+  it.each(["20.20.0", "22.23.3", "24.22.0", "26.12.1"])("refuses unsupported Node %s before reading configuration or opening a vault", (version) => {
+    // Simulate runtime metadata in a disposable child; never run a decoder payload.
+    const preload = `data:text/javascript,Object.defineProperty(process.versions,"node",{value:${JSON.stringify(version)}})`;
+    const result = spawnSync(process.execPath, ["--import", "tsx", "--import", preload, "src/index.ts", "--invalid-config-option"], {
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain(`Unsupported Node.js ${version}`);
+    expect(result.stderr).not.toContain("Unknown argument");
+  });
+
   it("starts without Obsidian and performs revision-safe note operations", async () => {
     const vault = await createTempVault(); cleanup.push(vault);
     const tsxCli = path.resolve("node_modules/tsx/dist/cli.mjs");

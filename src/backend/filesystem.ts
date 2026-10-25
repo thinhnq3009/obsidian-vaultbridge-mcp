@@ -1,6 +1,8 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
+import type { Stats } from "node:fs";
 import fs from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -11,6 +13,7 @@ import { normalizeVaultPathInput, VaultError } from "../types.js";
 import { VaultAccessPolicy } from "./accessPolicy.js";
 import { agentEditField, prepareAgentEdit } from "./agentEditTimestamp.js";
 import { parseMetadata, patchFrontmatterContent, patchHeadingContent } from "./markdown.js";
+import { ensurePrivateDirectory } from "./privateCache.js";
 import { VaultSearchService } from "./search.js";
 import type { BackendCapabilities, BackendStatus, NoteEdits, NoteEditsResult, PathStat, SearchQuery, SearchResponse, VaultBackend, WriteOptions } from "./types.js";
 
@@ -119,17 +122,15 @@ export class FilesystemVaultBackend implements VaultBackend {
 
   public async readNote(input: string): Promise<NoteReadResult> {
     const resolved = await this.accessPolicy.resolve(input, "read", true);
-    const stat = await fs.stat(resolved.absolute);
-    if (!stat.isFile()) throw new VaultError(`Path is not a file: ${resolved.relative}`, { code: "INVALID_PATH" });
-    if (stat.size > this.config.maxFileSizeBytes) throw new VaultError(`File exceeds configured size limit: ${resolved.relative}`, { code: "FILE_TOO_LARGE" });
-    const content = await fs.readFile(resolved.absolute, "utf8");
+    const existing = await readExisting(resolved.absolute, this.config.maxFileSizeBytes);
+    if (!existing) throw new VaultError(`Path does not exist: ${resolved.relative}`, { code: "NOT_FOUND" });
     return {
       path: resolved.relative,
-      content,
+      content: existing.content,
       contentType: contentTypeFor(resolved.relative),
       etag: null,
-      lastModified: stat.mtime.toUTCString(),
-      revision: revisionForContent(content),
+      lastModified: existing.stat.mtime.toUTCString(),
+      revision: existing.revision,
     };
   }
 
@@ -319,11 +320,13 @@ export class FilesystemVaultBackend implements VaultBackend {
   }
 
   private async withPathLock<T>(relative: string, callback: () => Promise<T>): Promise<T> {
-    const lockDir = path.join(this.config.cacheDir, "locks");
-    await fs.mkdir(lockDir, { recursive: true });
+    await ensurePrivateDirectory(this.config.cacheDir);
+    const lockDir = path.join(await fs.realpath(this.config.cacheDir), "locks");
+    await ensurePrivateDirectory(lockDir);
     const target = path.join(lockDir, createHash("sha256").update(`${this.vaultRealPath}:${relative}`).digest("hex"));
-    await fs.writeFile(target, "", { flag: "a" });
-    const release = await lockfile.lock(target, { retries: { retries: 20, minTimeout: 25, maxTimeout: 250 }, stale: 15_000, update: 5_000, realpath: true });
+    // proper-lockfile atomically creates `${target}.lock`; the target itself
+    // need not exist. Avoid creating or following a predictable sentinel file.
+    const release = await lockfile.lock(target, { retries: { retries: 20, minTimeout: 25, maxTimeout: 250 }, stale: 15_000, update: 5_000, realpath: false });
     try {
       return await callback();
     } finally {
@@ -339,33 +342,60 @@ function requireRevision(expected: string | undefined, actual: string): void {
 
 async function atomicWrite(destination: string, content: string, mode?: number): Promise<void> {
   await fs.mkdir(path.dirname(destination), { recursive: true });
-  const temporary = path.join(path.dirname(destination), `.obsidian-vault-mcp-${randomUUID()}.tmp`);
+  // Stage on the destination filesystem, in a private directory. A shared
+  // destination's permissions must not expose the staging file while writing.
+  const temporaryDirectory = await fs.mkdtemp(path.join(path.dirname(destination), ".obsidian-vault-mcp-"));
+  const temporary = path.join(temporaryDirectory, "note.tmp");
   try {
-    const handle = await fs.open(temporary, "wx", mode ?? 0o600);
+    const handle = await fs.open(temporary, "wx", 0o600);
     try {
       await handle.writeFile(content, "utf8");
+      if (mode !== undefined) await handle.chmod(mode & 0o777);
       await handle.sync();
     } finally {
       await handle.close();
     }
     await fs.rename(temporary, destination);
   } catch (error) {
-    await fs.unlink(temporary).catch(() => undefined);
     throw mapFsError(error, destination);
+  } finally {
+    await fs.rm(temporaryDirectory, { recursive: true, force: true });
   }
 }
 
-async function readExisting(absolute: string, maxFileSizeBytes: number): Promise<{ content: string; revision: string; mode: number } | undefined> {
+async function readExisting(absolute: string, maxFileSizeBytes: number): Promise<{ content: string; revision: string; mode: number; stat: Stats } | undefined> {
   try {
-    const stat = await fs.stat(absolute);
-    if (!stat.isFile()) throw new VaultError("Target is not a file.", { code: "INVALID_PATH" });
-    if (stat.size > maxFileSizeBytes) throw new VaultError("File exceeds configured size limit.", { code: "FILE_TOO_LARGE" });
-    const content = await fs.readFile(absolute, "utf8");
-    return { content, revision: revisionForContent(content), mode: stat.mode };
+    // Opening before stat must not block on a FIFO substituted for a note.
+    const handle = await fs.open(absolute, constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NONBLOCK));
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile()) throw new VaultError("Target is not a file.", { code: "INVALID_PATH" });
+      if (stat.size > maxFileSizeBytes) throw new VaultError("File exceeds configured size limit.", { code: "FILE_TOO_LARGE" });
+      const content = await readBounded(handle, maxFileSizeBytes);
+      return { content, revision: revisionForContent(content), mode: stat.mode, stat };
+    } finally {
+      await handle.close();
+    }
   } catch (error) {
     if (isCode(error, "ENOENT")) return undefined;
+    if (isCode(error, "EISDIR")) throw new VaultError("Target is not a file.", { code: "INVALID_PATH" });
     throw error;
   }
+}
+
+async function readBounded(handle: FileHandle, maxFileSizeBytes: number): Promise<string> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  while (total <= maxFileSizeBytes) {
+    // Read at most one byte beyond the limit, even if the file grows after stat.
+    const buffer = Buffer.alloc(Math.min(64 * 1024, maxFileSizeBytes + 1 - total));
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+    if (bytesRead === 0) return Buffer.concat(chunks, total).toString("utf8");
+    total += bytesRead;
+    if (total > maxFileSizeBytes) throw new VaultError("File exceeds configured size limit.", { code: "FILE_TOO_LARGE" });
+    chunks.push(buffer.subarray(0, bytesRead));
+  }
+  throw new VaultError("File exceeds configured size limit.", { code: "FILE_TOO_LARGE" });
 }
 
 function revisionForContent(content: string): string {

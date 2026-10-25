@@ -11,7 +11,7 @@ Prefer one logical task per branch:
 - `docs/issue-123-short-description`
 - `chore/short-description` (for standalone maintenance with no issue)
 
-Open pull requests against `main` unless a maintainer explicitly instructs otherwise. Do not push, merge, tag, or publish releases without project-owner approval.
+Open pull requests against `develop` unless a maintainer explicitly instructs otherwise. Do not push, merge, tag, or publish releases without project-owner approval.
 
 ## Conventional Commits
 
@@ -48,7 +48,7 @@ Put `Refs #123` in commit footers when the work is related to an issue. Prefer t
 Every PR must say what issue it is associated with (or why it needs no issue), what was verified, and what remains outstanding. Use the [pull request template](./.github/PULL_REQUEST_TEMPLATE.md).
 
 - **Partial implementation / one phase of a larger issue:** write `Refs #123` in the PR description. Mention the completed scope, remaining acceptance criteria, and follow-up owner. A plain reference **does not automatically close** the issue.
-- **Final issue-resolving PR:** write `Closes #123` (or `Fixes #123` / `Resolves #123`) **only after every acceptance criterion is satisfied**. Merging that PR into the default branch `main` causes GitHub to close the issue automatically.
+- **Final issue-resolving PR:** write `Closes #123` (or `Fixes #123` / `Resolves #123`) **only after every acceptance criterion is satisfied**. Merging that PR into the default branch `develop` causes GitHub to close the issue automatically.
 - **Multiple issues truly completed:** put each closing directive on its own line, with the correct issue number.
 - **Cross-repository issue:** specify the full `owner/repo#123` reference with the closing keyword.
 - **No tracking issue:** explain why in the PR's Issue relationship section rather than inventing a link.

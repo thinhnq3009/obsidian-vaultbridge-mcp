@@ -1,9 +1,81 @@
-# Prerelease preparation and evidence — issue #5
+# v0.1.0 — publication procedure and evidence
+
+> Source preparation branch: `release/v0.1.0`; track [release issue #38](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/38). No release tag, npm publication or stable deployment is implied by this branch. OAuth/SQLite/login UI is planned for v0.2.0 in [#39](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/39).
+
+## Non-negotiable release gates
+
+1. **Security:** CodeQL alerts #1, #2 and #4 were verified `fixed` on 2026-10-25 after PRs #42/#44. Candidate `b38cf918314bcd2016a135ded8ba6302ccd85c9c` passed [six-platform CI](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40208154561) and [security analysis](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40208154569). Recheck open alerts and final main SHA before publication. Issue #23 acceptance is closed.
+2. **Release SHA:** Merge reviewed `develop` changes into `main` via release PR only after gates; confirm `package.json` and lockfile both say `0.1.0`, `publishConfig.tag=latest`, README client examples, changelog, supported Node (`^22.23.4 || ^24.22.1`) and no accidental OAuth claims.
+3. **CI:** on the final intended SHA, require Ubuntu/macOS/Windows × supported patched Node minimums green with `npm ci`, build, lint, coverage tests, full and production audit, package dry run and installed-tarball CLI smoke against disposable vaults. Verify no secrets, user vault content, caches, or unintended source files in package.
+4. **Review:** confirm real note/Canvas read/write/search, scoped authorization, stale revision rejection, symlink/path/TOCTOU regression, and both CLI aliases from the packed tarball. Review source-to-artifact integrity and npm provenance/trusted publishing setup.
+5. **Owner-approved publication only:** from clean reviewed `main` checkout and trusted provenance environment, publish `npm publish --tag latest --provenance`; do not expose npm publish secrets to PR builds. Creating a GitHub release alone does **not** publish npm. If trusted publishing cannot be configured, stop rather than silently omitting provenance.
+6. **Verify live artifact:** `npm view obsidian-vaultbridge-mcp@0.1.0 gitHead dist --json`, `npm view obsidian-vaultbridge-mcp dist-tags --json`, registry tarball integrity/attestation, and on supported Node versions `npx -y obsidian-vaultbridge-mcp@0.1.0 --vault /path/to/disposable-vault`. Confirm downstream Codex/Claude/Cursor STDIO handshake and filesystem tool round trip.
+7. **Tag and release:** tag exact published `main` SHA as `v0.1.0`, create a normal (non-prerelease) GitHub release with limitations and migration notes, update Obsidian release evidence and close issue #38 only after npm+GitHub artifacts are verified.
+
+## Publication status
+
+- v0.1.0: consult [npm](https://www.npmjs.com/package/obsidian-vaultbridge-mcp) and [GitHub Releases](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/releases) for live publication status. Source preparation alone does not establish a published artifact.
+- v0.1.0-alpha.1: prepared in source, **not published** at last verified observation.
+- v0.1.0-alpha.0: historically published, not equivalent to current reviewed source.
+- Existing HTTP Bearer token/STDIO are current functionality; OAuth 2.1 is not part of v0.1.0.
+
+---
+
+## Trusted publishing workflow
+
+The manual `Publish npm` workflow in `.github/workflows/publish.yml` publishes
+only `obsidian-vaultbridge-mcp@0.1.0`. Configure an npm GitHub Actions trusted
+publisher for owner `thinhnq3009`, repository `obsidian-vaultbridge-mcp`, workflow
+filename `publish.yml`, no environment name, and direct publish permission.
+No npm token is used. See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
+
+Merge the reviewed release PR into main and sync main back into develop so the
+manual workflow is discoverable on the default branch. Wait for CI and Security
+analysis on the exact main SHA, then dispatch `publish.yml` with ref `main` and
+input `sha` equal to that full SHA. The workflow rejects other refs/versions,
+requires green main CI/security and no open HIGH/CRITICAL alerts, reruns local
+checks, publishes with provenance, checks registry source/integrity/attestation,
+and installs the registry package on both supported Node versions. Create the
+GitHub tag/release only after these jobs succeed. A failed post-publication
+check requires investigation; a published version cannot be overwritten.
+
+The following alpha sections are historical snapshots; their outstanding-gate
+and dist-tag statements describe the dated observations, not live state.
+
+## Historical alpha preparation and evidence — issue #5
 
 This repository prepares `obsidian-vaultbridge-mcp@0.1.0-alpha.1`; it has not
 published that version. Only a reviewed prerelease on a green CI revision may be
 published intentionally. Publication, merging, changing registry tags and a stable
 release are not performed by this task. Use disposable, non-sensitive vaults.
+
+## Current release status (verified 2026-10-24)
+
+Package preparation PR #25 is merged. The default branch is now `develop`;
+`develop@8d66c466800bad8d1243461b9885f90372c6f189` passed the six
+Ubuntu/macOS/Windows × Node 22.23.4/24.22.1 jobs and dependency audits in
+[CI run 40103029169](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40103029169).
+The [security workflow](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40103029160)
+also completed, but a successful analysis job is not a clean alert inventory.
+
+Three high-severity CodeQL alerts remain open on that exact develop revision:
+[temporary-file creation #1](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/security/code-scanning/1),
+[filesystem race #2](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/security/code-scanning/2),
+and [filesystem race #4](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/security/code-scanning/4).
+These are scanner findings requiring evidence-backed triage, not confirmed
+exploits. Resolve or document reviewed dispositions before publication. Issue
+[#23](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/23) has merged
+source/runtime-policy remediation. The owner confirmed no deployments on
+2026-10-24; the [SEC-09 acceptance record](docs/SEC-09-brotli-acceptance.md)
+documents that inventory, decoder paths and startup regression checks.
+It does not verify unknown npm consumers or authorize publication of alpha.1.
+
+Registry `alpha` and `latest` still point to `0.1.0-alpha.0`. The alpha.1 registry
+artifact, its provenance and post-publication smoke checks do not yet exist.
+Keep #5 open. Current candidate evidence is in
+[the release handoff](docs/releases/issue-5-validation.md); older Node 20 results
+in the historical artifact record do not establish current supported-runtime
+validation.
 
 ## Published alpha provenance (verified 2026-10-24)
 
@@ -72,12 +144,12 @@ or index refresh time is promised.
 
 | Item | Current evidence and gate |
 | --- | --- |
-| K03: search read scopes / symlinks | Fixed on main by PR #21; `test/securityBoundaries.test.ts` and search tests cover both modes and scope/cache changes. |
-| K04: search freshness | Fixed on main by PR #22; `test/searchConsistency.test.ts` covers committed mutations, watcher ordering and failures. External edits with watchers off still require rebuild. |
+| K03: search read scopes / symlinks | Merged through PR #21; `test/securityBoundaries.test.ts` and search tests cover both modes and scope/cache changes. |
+| K04: search freshness | Merged through PR #22; `test/searchConsistency.test.ts` covers committed mutations, watcher ordering and failures. External edits with watchers off still require rebuild. |
 | #4: YAML integer precision | Closed with lossless comparison; `test/agentEditTimestamp.test.ts` covers adjacent unsafe integers, no-op controls, integral floats and key collisions (#8/#9). |
-| K06: Local REST enforcement | Implemented in this security branch (#17): read-only/scopes enforced before forwarding; remote search/active-file and atomic/revision promises fail closed. Canonical symlink checks require filesystem mode. |
-| Other known safety work | #16 merged through PR #24. This branch implements #14, #18, #19 and #20 plus source/runtime remediation for #23. Deployment inventories, Windows ACL checks, green CI/review and owner approval are release gates. |
-| Dependency advisories | Baseline production audit found 8 affected packages (1 critical, 3 high, 3 moderate, 1 low). Resolutions are refreshed within existing semver ranges; the SDK minimum is raised to 1.32.2; Vitest/coverage to 4.1.12 and tsx to 4.23.15 resolve the tooling advisories. Audit the reviewed lockfile and installed artifact before publishing. Audit success is not an exploitability or overall safety guarantee. |
+| K06: Local REST enforcement | Merged (#17): read-only/scopes enforced before forwarding; remote search/active-file and atomic/revision promises fail closed. Canonical symlink checks require filesystem mode. |
+| Other known safety work | #14, #16, #17, #18, #19 and #20 are closed with merged fixes. #23 source/runtime-policy remediation is merged; its acceptance record includes the owner's zero-deployment inventory. Future deployment inventories, Windows ACL checks, green CI/review and owner approval remain release gates. |
+| Dependency advisories | Baseline production audit found 8 affected packages (1 critical, 3 high, 3 moderate, 1 low). The current candidate uses SDK 1.32.2+, Vitest/coverage 5.0.5+, Chokidar 6+, Express 5.3.0+ and tsx 4.23.15+. Review the current lockfile; the earlier Node 20 artifact record predates later dependency upgrades. Audit the reviewed lockfile and installed artifact before publishing. Audit success is not an exploitability or overall safety guarantee. |
 
 The README scopes its controls to filesystem mode. An alpha is for disposable
 pilot data; a production-safe or stable claim requires closing the above gates,
@@ -143,8 +215,10 @@ Use the new package spec in all client configurations. See MIGRATION.md.
 6. After npm.io updates, compare its indexed version, links and test indicator.
    Update the issue/task with observed outcomes, not a promised health score.
 
-The published-artifact checks for alpha.1, remote CI review, publisher provenance
-and npm.io refresh remain pending until the owner intentionally performs release.
+The published-artifact checks for alpha.1, publisher provenance and npm.io refresh
+remain pending until intentional owner-approved release. Current source CI is
+green; security alert triage, deployment evidence and final candidate review are
+still required.
 
 
 ## Security bundle release gate — issues #14, #17–#20 and #23

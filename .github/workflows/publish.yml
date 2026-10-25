@@ -1,0 +1,122 @@
+name: Publish npm
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Full reviewed main commit SHA (must match the selected main ref)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publication
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      security-events: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.1
+          package-manager-cache: false
+      - name: Require reviewed main SHA and successful CI/security analysis
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ inputs.sha }}
+        run: |
+          test "$GITHUB_REF" = refs/heads/main
+          test "$RELEASE_SHA" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$RELEASE_SHA&per_page=100" > /tmp/release-runs.json
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          const { workflow_runs: runs } = JSON.parse(fs.readFileSync('/tmp/release-runs.json', 'utf8'));
+          for (const name of ['CI', 'Security analysis']) {
+            const run = runs.filter(r => r.name === name && r.event === 'push' && r.head_branch === 'main').sort((a, b) => b.id - a.id)[0];
+            assert(run?.conclusion === 'success', `${name} must succeed on the selected main SHA`);
+          }
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
+          assert.equal(pkg.name, 'obsidian-vaultbridge-mcp');
+          assert.equal(pkg.version, '0.1.0');
+          assert.equal(lock.version, pkg.version);
+          assert.equal(lock.packages[''].version, pkg.version);
+          assert.equal(pkg.publishConfig.tag, 'latest');
+          JS
+          gh api --paginate "repos/$GITHUB_REPOSITORY/code-scanning/alerts?state=open&per_page=100" --jq '.[] | select(.rule.security_severity_level == "high" or .rule.security_severity_level == "critical") | .number' > /tmp/release-alerts.txt
+          test ! -s /tmp/release-alerts.txt
+      - run: npm ci
+      - run: npm run build
+      - run: npm run lint
+      - run: npm test -- --maxWorkers=2
+      - run: npm audit --audit-level=high
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm pack --dry-run
+      - run: npm run smoke:package
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.1
+          package-manager-cache: false
+      - run: npm ci
+      - name: Publish with npm trusted publishing and provenance
+        run: npm publish --access public --tag latest --provenance
+      - name: Verify registry version, source and provenance
+        env:
+          RELEASE_SHA: ${{ inputs.sha }}
+        run: |
+          npm view obsidian-vaultbridge-mcp@0.1.0 version gitHead dist --json > /tmp/registry.json
+          npm view obsidian-vaultbridge-mcp dist-tags --json > /tmp/tags.json
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          const pkg = JSON.parse(fs.readFileSync('/tmp/registry.json', 'utf8'));
+          const tags = JSON.parse(fs.readFileSync('/tmp/tags.json', 'utf8'));
+          assert.equal(pkg.version, '0.1.0');
+          assert.equal(pkg.gitHead, process.env.RELEASE_SHA);
+          assert(pkg.dist.integrity && pkg.dist.attestations?.url, 'Registry must expose integrity and provenance');
+          assert.equal(tags.latest, pkg.version);
+          console.log(JSON.stringify({ sha: pkg.gitHead, integrity: pkg.dist.integrity, attestations: pkg.dist.attestations, tags }, null, 2));
+          JS
+
+  registry-smoke:
+    needs: publish
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22.23.4, 24.22.1]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm run smoke:package -- obsidian-vaultbridge-mcp@0.1.0

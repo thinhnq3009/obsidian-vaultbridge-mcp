@@ -62,8 +62,10 @@ try {
   const installed = path.join(consumer, "node_modules", canonical);
   const manifest = JSON.parse(await fs.readFile(path.join(installed, "package.json"), "utf8")) as Manifest;
   assert.equal(manifest.name, canonical);
-  assert.match(manifest.version, /^\d+\.\d+\.\d+-alpha\.\d+$/u);
-  assert.equal(manifest.publishConfig.tag, "alpha");
+  // Validate the actual npm release channel without tying this smoke to alpha-only versions.
+  assert.match(manifest.version, /^\d+\.\d+\.\d+(?:-alpha\.\d+)?$/u);
+  const isAlpha = /-alpha\.\d+$/u.test(manifest.version);
+  assert.equal(manifest.publishConfig.tag, isAlpha ? "alpha" : "latest");
   assert.equal(manifest.repository.url, `git+${repository}.git`);
   assert.equal(manifest.homepage, `${repository}#readme`);
   assert.equal(manifest.bugs.url, `${repository}/issues`);
@@ -74,8 +76,8 @@ try {
     assert((await fs.stat(path.join(installed, entry))).isFile(), `Missing package entry: ${entry}`);
   }
   const readme = await fs.readFile(path.join(installed, "README.md"), "utf8");
-  assert(readme.includes(`npx ${canonical}@alpha`));
-  assert(readme.includes("Early preview"));
+  assert(readme.includes(`npx ${canonical}@${isAlpha ? "alpha" : manifest.version}`));
+  assert(readme.includes(isAlpha ? "Early preview" : `v${manifest.version}`));
   for (const executable of [canonical, legacy]) {
     assert.equal(manifest.bin[executable], "./dist/index.js");
     const cli = path.join(installed, manifest.bin[executable]);
@@ -112,6 +114,21 @@ try {
       const stale = await client.callTool({ name: "obsidian_write_note", arguments: { path: notePath, content: "# Stale\n", mode: "replace", expected_revision: note.revision } });
       assert.equal(stale.isError, true);
       assert(JSON.stringify(stale).includes("CONFLICT"));
+      assert.equal(await fs.readFile(path.join(vault, notePath), "utf8"), persisted);
+      const metadata = await client.callTool({ name: "obsidian_read_note_metadata", arguments: { path: notePath } });
+      assert(!metadata.isError, JSON.stringify(metadata));
+      assert.equal((metadata.structuredContent as { headings: Array<{ text: string }> }).headings[0]?.text, "Updated package");
+      const search = await client.callTool({ name: "obsidian_search", arguments: { query: "Updated package" } });
+      assert(!search.isError, JSON.stringify(search));
+      assert((search.structuredContent as { results: Array<{ path: string }> }).results.some(result => result.path === notePath));
+      const canvasPath = `${executable}.canvas`;
+      const canvas = await client.callTool({ name: "obsidian_create_canvas", arguments: { path: canvasPath } });
+      assert(!canvas.isError, JSON.stringify(canvas));
+      const canvasRead = await client.callTool({ name: "obsidian_read_canvas", arguments: { path: canvasPath } });
+      assert(!canvasRead.isError, JSON.stringify(canvasRead));
+      assert.equal((canvasRead.structuredContent as { nodeCount: number }).nodeCount, 0);
+      const rootDelete = await client.callTool({ name: "obsidian_delete_path", arguments: { path: ".", recursive: true } });
+      assert.equal(rootDelete.isError, true);
       assert.equal(await fs.readFile(path.join(vault, notePath), "utf8"), persisted);
       process.stdout.write(`${process.version}: npx ${executable} → ${manifest.name}@${manifest.version}, MCP round trip passed\n`);
     } finally {
