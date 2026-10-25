@@ -66,7 +66,11 @@ SDK is 1.32.2, Express 5.3.0; this server builds its own app with policy before
 Never treat ingress rejection or an npm engine field as a substitute for patched
 Node binaries. This work sends no exploit payload and makes no production RCE
 claim. Maintainers must inventory/restart actual deployments; that operational
-part of #23 remains open after source remediation.
+part was still open at the time of the original bundle. The subsequent
+[SEC-09 acceptance record](SEC-09-brotli-acceptance.md) records the owner's
+2026-10-24 confirmation of no deployments and fresh validation. Unknown npm
+consumers and the unchanged published alpha.0 are not verified by that declaration;
+publication and migration remain gated by #5.
 
 ## Dependency, CI and release policy
 

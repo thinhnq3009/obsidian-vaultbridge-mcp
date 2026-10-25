@@ -20,6 +20,18 @@ afterEach(async () => {
 });
 
 describe("startHttpServer", () => {
+  it.each(["20.20.0", "22.23.3", "24.22.0", "26.12.1"])("rejects unsupported Node %s before initializing the backend", async (version) => {
+    const originalVersion = process.versions.node;
+    const createApplication = vi.fn();
+    Object.defineProperty(process.versions, "node", { value: version });
+    try {
+      await expect(startHttpServer(makeConfig({ mcpHttpPort: 0 }), { createApplication })).rejects.toThrow(/Unsupported Node.js/);
+      expect(createApplication).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process.versions, "node", { value: originalVersion });
+    }
+  });
+
   it("serves standalone tools with schemas matching registered handlers", async () => {
     const vault = await createTempVault(); vaults.push(vault);
     const server = await startHttpServer(makeConfig({ vaultPath: vault, mcpTransport: "http", mcpHttpPort: 0 })); servers.push(server);
@@ -99,6 +111,9 @@ describe("startHttpServer", () => {
     expect(await send({ "content-encoding": "br" }, benign)).toBe(401);
     expect(await send({ host: "attacker.invalid", "content-encoding": "br", authorization: "Bearer test-token" }, benign)).toBe(403);
     expect(await send({ "content-encoding": "br", authorization: "Bearer test-token" }, benign)).toBe(415);
+    for (const encoding of ["BR", "gzip, br", "deflate"]) {
+      expect(await send({ "content-encoding": encoding, authorization: "Bearer test-token" }, benign)).toBe(415);
+    }
     expect(await send({ "content-encoding": "gzip", authorization: "Bearer test-token" })).toBe(415);
     expect(await send({ authorization: "Bearer test-token" }, "x".repeat(102401))).toBe(413);
     expect(decoder).not.toHaveBeenCalled();

@@ -20,9 +20,11 @@ Three high-severity CodeQL alerts remain open on that exact develop revision:
 and [filesystem race #4](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/security/code-scanning/4).
 These are scanner findings requiring evidence-backed triage, not confirmed
 exploits. Resolve or document reviewed dispositions before publication. Issue
-[#23](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/23) remains open;
-source/runtime-policy remediation is merged, but actual deployment inventories
-and operational verification must not be inferred from source CI.
+[#23](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/23) has merged
+source/runtime-policy remediation. The owner confirmed no deployments on
+2026-10-24; the [SEC-09 acceptance record](docs/SEC-09-brotli-acceptance.md)
+documents that inventory, decoder paths and startup regression checks.
+It does not verify unknown npm consumers or authorize publication of alpha.1.
 
 Registry `alpha` and `latest` still point to `0.1.0-alpha.0`. The alpha.1 registry
 artifact, its provenance and post-publication smoke checks do not yet exist.
@@ -102,7 +104,7 @@ or index refresh time is promised.
 | K04: search freshness | Merged through PR #22; `test/searchConsistency.test.ts` covers committed mutations, watcher ordering and failures. External edits with watchers off still require rebuild. |
 | #4: YAML integer precision | Closed with lossless comparison; `test/agentEditTimestamp.test.ts` covers adjacent unsafe integers, no-op controls, integral floats and key collisions (#8/#9). |
 | K06: Local REST enforcement | Merged (#17): read-only/scopes enforced before forwarding; remote search/active-file and atomic/revision promises fail closed. Canonical symlink checks require filesystem mode. |
-| Other known safety work | #14, #16, #17, #18, #19 and #20 are closed with merged fixes; source/runtime-policy remediation for #23 is merged, while #23 remains open. Deployment inventories, Windows ACL checks, green CI/review and owner approval are release gates. |
+| Other known safety work | #14, #16, #17, #18, #19 and #20 are closed with merged fixes. #23 source/runtime-policy remediation is merged; its acceptance record includes the owner's zero-deployment inventory. Future deployment inventories, Windows ACL checks, green CI/review and owner approval remain release gates. |
 | Dependency advisories | Baseline production audit found 8 affected packages (1 critical, 3 high, 3 moderate, 1 low). The current candidate uses SDK 1.32.2+, Vitest/coverage 5.0.5+, Chokidar 6+, Express 5.3.0+ and tsx 4.23.15+. Review the current lockfile; the earlier Node 20 artifact record predates later dependency upgrades. Audit the reviewed lockfile and installed artifact before publishing. Audit success is not an exploitability or overall safety guarantee. |
 
 The README scopes its controls to filesystem mode. An alpha is for disposable
