@@ -4,8 +4,9 @@
 
 - Align package, repository links, client examples and MCP handshake with `obsidian-vaultbridge-mcp`; retain the old executable as an explicit compatibility alias.
 - Keep the release on the alpha line and default publication to the `alpha` tag. The previous source `1.0.0` declaration did not establish a stable VaultBridge release.
-- Expose real test/CI evidence, clean stale build output before packing, and smoke-test the installed tarball through npx on Node 20/22 in CI.
-- Refresh dependency resolutions, raise the SDK/Vitest/tsx minimum versions within their current major lines, and require a production audit before publication.
+- Expose real test/CI evidence, clean stale build output before packing, and smoke-test the installed tarball through npx on patched Node 22/24 in CI.
+- Refresh dependency resolutions, raise the SDK/Vitest/tsx minimum versions, and require a production audit before publication.
+- Require Node 22.23.4+ (22.x) or 24.22.1+ (24.x), with a startup runtime check; retire Node 20 support.
 - Record alpha.0 artifact/source evidence and outstanding release safety gates in RELEASING.md.
 - Include the metadata, lossless YAML comparison, agent timestamps, section reads, atomic multi-edit, vault/search boundary and search consistency fixes merged since the alpha.0 source baseline. These changes do not establish production safety; known limitations remain documented.
 
