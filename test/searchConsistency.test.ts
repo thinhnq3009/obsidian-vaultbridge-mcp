@@ -264,9 +264,15 @@ for (const mode of ["scan", "indexed"] as const) {
       const note = await backend.writeNote("Failure.md", "beforefailure");
       const target = path.join(vault, note.path);
       const open = fs.open;
+      const rename = fs.rename;
+      let committed = false;
+      vi.spyOn(fs, "rename").mockImplementation(async (...args) => {
+        await rename(...args);
+        if (args[1] === target) committed = true;
+      });
       let injected = 0;
       vi.spyOn(fs, "open").mockImplementation(async (...args) => {
-        if (args[0] === target) { injected++; throw new Error("injected index read failure"); }
+        if (args[0] === target && committed && injected === 0) { injected++; throw new Error("injected index read failure"); }
         return open(...args);
       });
       await expect(backend.writeNote(note.path, "afterfailure", { mode: "replace", expectedRevision: note.revision })).rejects.toMatchObject({ code: "INDEX_ERROR", details: { committed: true } });
@@ -392,10 +398,10 @@ it.each([10, 1000])("performance smoke: edits one note without scanning a %i-not
   await backend.writeNote("Seed.md", "performancemarker", { mode: "replace", expectedRevision: revisionOf("unrelated seed") });
   const elapsedMs = performance.now() - start;
   expect(readdir).not.toHaveBeenCalled();
-  const indexedBodies = open.mock.calls.filter(([file]) => file === path.join(vault, "Seed.md"));
-  expect(indexedBodies).toHaveLength(1);
-  expect(open.mock.calls).toHaveLength(2); // One atomic temp write, one index read.
-  process.stdout.write(`OBS-006 perf: vault=${count}, refreshed=1, directoryReads=0, indexBodyReads=1, editMs=${elapsedMs.toFixed(2)}\n`);
+  const noteBodies = open.mock.calls.filter(([file]) => file === path.join(vault, "Seed.md"));
+  expect(noteBodies).toHaveLength(2); // Descriptor-based revision read, then index read.
+  expect(open.mock.calls).toHaveLength(3); // Plus one atomic temp write.
+  process.stdout.write(`OBS-006 perf: vault=${count}, refreshed=1, directoryReads=0, noteBodyReads=2, indexBodyReads=1, editMs=${elapsedMs.toFixed(2)}\n`);
   expect(await paths(backend, { query: "performancemarker" })).toEqual(["Seed.md"]);
 }, 20_000);
 
