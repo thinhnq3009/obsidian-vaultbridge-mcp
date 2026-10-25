@@ -115,6 +115,21 @@ try {
       assert.equal(stale.isError, true);
       assert(JSON.stringify(stale).includes("CONFLICT"));
       assert.equal(await fs.readFile(path.join(vault, notePath), "utf8"), persisted);
+      const metadata = await client.callTool({ name: "obsidian_read_note_metadata", arguments: { path: notePath } });
+      assert(!metadata.isError, JSON.stringify(metadata));
+      assert.equal((metadata.structuredContent as { headings: Array<{ text: string }> }).headings[0]?.text, "Updated package");
+      const search = await client.callTool({ name: "obsidian_search", arguments: { query: "Updated package" } });
+      assert(!search.isError, JSON.stringify(search));
+      assert((search.structuredContent as { results: Array<{ path: string }> }).results.some(result => result.path === notePath));
+      const canvasPath = `${executable}.canvas`;
+      const canvas = await client.callTool({ name: "obsidian_create_canvas", arguments: { path: canvasPath } });
+      assert(!canvas.isError, JSON.stringify(canvas));
+      const canvasRead = await client.callTool({ name: "obsidian_read_canvas", arguments: { path: canvasPath } });
+      assert(!canvasRead.isError, JSON.stringify(canvasRead));
+      assert.equal((canvasRead.structuredContent as { nodeCount: number }).nodeCount, 0);
+      const rootDelete = await client.callTool({ name: "obsidian_delete_path", arguments: { path: ".", recursive: true } });
+      assert.equal(rootDelete.isError, true);
+      assert.equal(await fs.readFile(path.join(vault, notePath), "utf8"), persisted);
       process.stdout.write(`${process.version}: npx ${executable} → ${manifest.name}@${manifest.version}, MCP round trip passed\n`);
     } finally {
       await client.close();
