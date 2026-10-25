@@ -9,7 +9,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import express from "express";
-import Database from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
 import { betterAuth } from "better-auth";
 import { jwt } from "better-auth/plugins";
 import { cimd } from "@better-auth/cimd";
@@ -20,8 +20,9 @@ import { z } from "zod";
 
 const temporaryDirectory = await mkdtemp(path.join(tmpdir(), "vaultbridge-auth-001-"));
 const databasePath = path.join(temporaryDirectory, "auth.sqlite");
-const database = new Database(databasePath);
-database.pragma("journal_mode = WAL");
+const database = new DatabaseSync(databasePath);
+const journalMode = database.prepare("PRAGMA journal_mode = WAL").get().journal_mode;
+assert.equal(String(journalMode).toLowerCase(), "wal");
 let listener;
 
 try {
@@ -133,7 +134,7 @@ try {
     betterAuthCimd: "1.7.13",
     mcpServerSdk: "2.4.0",
     mcpExpressAdapter: "2.0.2",
-    database: "temporary better-sqlite3 file with WAL, outside any vault",
+    database: "temporary node:sqlite file with WAL, outside any vault",
     localOnly: true,
     authServerDiscovery: true,
     protectedResourceMetadata: true,

@@ -15,7 +15,6 @@
     "@modelcontextprotocol/express": "2.0.2",
     "@modelcontextprotocol/server": "2.4.0",
     "better-auth": "1.7.13",
-    "better-sqlite3": "13.0.3",
     "express": "5.3.0",
     "zod": "4.6.7"
   },
