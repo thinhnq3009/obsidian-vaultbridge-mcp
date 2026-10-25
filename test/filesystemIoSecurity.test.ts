@@ -124,8 +124,11 @@ describe("private atomic-write staging", () => {
     });
     await fixture.backend.writeNote("Shared.md", "changed", { mode: "replace", expectedRevision: revisionOf("original") });
     expect(observed).toBe(true);
-    expect((await fs.stat(target)).mode & 0o777).toBe(0o664);
-    expect(await fs.readFile(target, "utf8")).toBe("changed");
+    const result = await fs.open(target, "r");
+    try {
+      expect((await result.stat()).mode & 0o777).toBe(0o664);
+      expect(await result.readFile("utf8")).toBe("changed");
+    } finally { await result.close(); }
     expect((await fs.readdir(fixture.vault)).filter((name) => name.startsWith(".obsidian-vault-mcp-"))).toEqual([]);
   });
 
