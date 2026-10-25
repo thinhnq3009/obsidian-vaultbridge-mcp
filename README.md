@@ -2,7 +2,7 @@
 
 Standalone MCP server for reading, writing, searching, and managing an Obsidian vault directly through the filesystem. Obsidian and the Local REST API plugin do not need to be installed or running.
 
-> **v0.1.0 first public release candidate — NOT YET PUBLISHED.** This branch prepares an installable release for local MCP clients; publication is blocked until release/security gate #38 is reviewed. Use only a disposable, non-sensitive test vault during release preparation. This version does **not** include OAuth, embedded SQLite, or a login UI (planned for v0.2.0). See [release gates](./RELEASING.md).
+> **v0.1.0:** local filesystem MCP integration for Codex, Cursor and Claude Desktop. Requires patched Node 22 or 24 (see below). OAuth, embedded SQLite and a login UI are planned for v0.2.0. Review the [cache permissions](#search-cache-privacy) and [HTTP deployment requirements](#http-deployment-requirements) before connecting a vault.
 
 [![CI](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/workflows/ci.yml)
 
@@ -32,7 +32,7 @@ VAULT_PATH=C:/Users/me/Documents/My Vault
 npx obsidian-vaultbridge-mcp@0.1.0
 ```
 
-**Not yet published:** The `@0.1.0` examples above are intended for use **only after** the npm release is approved and verified. Until then, the registry still serves the older `alpha.0` artifact (last checked 2026-10-24). For source testing, build this branch and run `node /absolute/path/to/dist/index.js --vault /path/to/test-vault` with a disposable vault. Once published, `@latest` will point to `0.1.0` only after verifying npm dist-tags.
+Release availability and provenance are recorded on [npm](https://www.npmjs.com/package/obsidian-vaultbridge-mcp) and [GitHub Releases](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/releases). Use the explicit version above for reproducible client configuration.
 
 The default transport is STDIO. Obsidian, API keys, certificates, and REST endpoints are not required.
 

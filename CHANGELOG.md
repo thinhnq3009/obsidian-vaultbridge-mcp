@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.1.0 (unreleased — public release candidate)
+## 0.1.0
 
-- First installable public release candidate: npm CLI and MCP STDIO integration for Codex, Cursor and Claude Desktop, with a local filesystem backend that does not require an Obsidian process or Local REST plugin.
+- First installable public release: npm CLI and MCP STDIO integration for Codex, Cursor and Claude Desktop, with a local filesystem backend that does not require an Obsidian process or Local REST plugin.
 - Notes, frontmatter/metadata, search, Canvas, path policies, read-only mode, safe atomic writes and revision-conflict checks are included; unsupported active-file/open-file operations in standalone mode remain documented.
 - Requires patched Node.js 22.23.4+ (22.x) or 24.22.1+ (24.x); full multi-platform CI, packed-tarball smoke and dependency audits are release gates.
 - Package publication is intended for npm `latest` only after all release/security acceptance criteria in #38 are satisfied; repository changes alone do not publish or certify this version.
