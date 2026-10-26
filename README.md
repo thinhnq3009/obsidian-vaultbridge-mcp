@@ -366,3 +366,58 @@ The server limits headers to 16 KiB, requests to 120/minute across the instance,
 active responses to 32, connections to 128 and requests/socket to 100. Header,
 body and keep-alive timeouts are 10/30/5 seconds; SSE response streams have no
 fixed duration. Use separate instances for clients needing larger shared budgets.
+
+## Local owner login (AUTH-002, unreleased)
+
+Owner identity is an **opt-in, separate loopback service**, not yet an MCP OAuth
+provider. It does not change `/mcp`, static Bearer authentication, vault permissions,
+or STDIO. Do not expose this UI through a proxy or treat its cookie as an MCP token.
+The HTTP mode resolver, OAuth default/explicit anonymous-mode warnings, consent,
+PKCE, and token-to-tool integration remain AUTH-003 and later work.
+
+```bash
+# From source, using a disposable vault for development:
+npm run build
+node dist/index.js owner-auth --vault /absolute/path/to/test-vault
+# Installed CLI (after an approved future release):
+obsidian-vaultbridge-mcp owner-auth --vault /absolute/path/to/vault
+```
+
+Open the exact `http://127.0.0.1:39146/login` address printed on stderr. First-run
+setup requires a random, one-time token read from the **protected file path**
+printed by the CLI; the token itself is never logged or placed in a URL. It expires
+in ten minutes. Choose an email and a 12–128 character password. No default
+password, public signup, or email-reset route exists. `/admin` displays the current
+account/session expiry and offers logout and **revoke all sessions**. Neither page
+grants MCP access. A forgotten password requires stopping the owner service and
+running the same command with `--recover-owner`; the local recovery token permits
+replacing the existing owner's password and revokes every session. Login is paused
+until recovery finishes. The owner email is not changed by recovery.
+
+Normal MCP startup does not create an account/database. In particular anonymous
+local usage does not require setup. `MCP_AUTH_MODE=none` rejects the explicit
+`owner-auth` command before opening storage; omit that command for anonymous use.
+No new network-anonymous or OAuth mode is enabled by this change.
+
+Configuration precedence for the owner command: **CLI > ENV > working-directory
+`.env` > defaults** (restart to apply):
+
+| Setting | CLI | Default / bounds |
+| --- | --- | --- |
+| `MCP_OWNER_PORT` | `--owner-port` | 39146; 1–65535, always 127.0.0.1 |
+| `MCP_AUTH_LOGIN_MAX_FAILURES` | `--auth-login-max-failures` | 5; 1–20 |
+| `MCP_AUTH_LOGIN_WINDOW_SECONDS` | `--auth-login-window-seconds` | 900; 1–86400 |
+
+Login failure limits are separate from MCP throughput: normalized email + actual
+TCP peer, peer-wide budget four times the configured failures, and progressive
+1–60 second backoff. Reservations count in-flight attempts, persist over restart,
+and expire at the fixed window boundary. Successful login clears its pair budget
+and removes its peer reservation; other failed attempts remain. No account-wide
+lockout allows a remote attacker to target the owner's email. The Better Auth
+persistent limiter is explicitly enabled even in development/test, including its
+sensitive sign-in rule (3 attempts/10 seconds), so a raised custom limit does not
+remove that additional protection. The owner listener also has a separate cheap
+120-request/minute ceiling, 8 KiB JSON limit and 16-connection ceiling. It never
+uses MCP's tool budget or trusts forwarding/client-IP headers.
+
+Storage and backup/recovery/rollback instructions: [MIGRATION.md](MIGRATION.md#owner-auth-storage-auth-002).
