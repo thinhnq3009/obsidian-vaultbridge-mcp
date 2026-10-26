@@ -36,7 +36,7 @@ if ($env:VAULTBRIDGE_PRIVATE_DIRECTORY -eq 'true') {
   try {
     execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
       env: { ...process.env, VAULTBRIDGE_PRIVATE_PATH: target, VAULTBRIDGE_PRIVATE_DIRECTORY: String(directory) },
-      stdio: "pipe", timeout: 15000, windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"], timeout: 15000, windowsHide: true,
     });
   } catch (cause) {
     throw new Error("Cannot restrict owner auth Windows ACLs. Use a per-user local NTFS app-data directory with PowerShell available.", { cause });

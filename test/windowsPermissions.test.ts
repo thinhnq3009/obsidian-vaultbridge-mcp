@@ -20,7 +20,7 @@ foreach ($target in @($env:VAULTBRIDGE_ACL_TEST, (Join-Path $env:VAULTBRIDGE_ACL
   if ($rules.Count -ne 1 -or $rules[0].IdentityReference.Value -ne $sid -or $rules[0].AccessControlType -ne 'Allow') { throw 'DACL is not owner-only' }
 }
 'owner-only'
-`], { env: { ...process.env, VAULTBRIDGE_ACL_TEST: directory }, encoding: "utf8", timeout: 15000, windowsHide: true });
+`], { env: { ...process.env, VAULTBRIDGE_ACL_TEST: directory }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 15000, windowsHide: true });
     expect(output.trim()).toBe("owner-only");
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 }, 30000);
