@@ -3,7 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { expect, it } from "vitest";
-import { restrictWindowsAccess } from "../src/auth/windowsPermissions.js";
+import { restrictWindowsAccess, windowsPowerShellEnvironment } from "../src/auth/windowsPermissions.js";
+
+it("removes inherited PSModulePath case-insensitively while preserving other environment values", () => {
+  expect(windowsPowerShellEnvironment({ PRIVATE_TEST: "kept" }, { PSModulePath: "PS7 modules", psmodulepath: "another incompatible path", PATH: "kept" }))
+    .toEqual({ PATH: "kept", PRIVATE_TEST: "kept" });
+});
 
 it.runIf(process.platform === "win32")("restricts real Windows directory/file DACLs to the current user", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "vaultbridge-windows-acl-"));
@@ -20,7 +25,7 @@ foreach ($target in @($env:VAULTBRIDGE_ACL_TEST, (Join-Path $env:VAULTBRIDGE_ACL
   if ($rules.Count -ne 1 -or $rules[0].IdentityReference.Value -ne $sid -or $rules[0].AccessControlType -ne 'Allow') { throw 'DACL is not owner-only' }
 }
 'owner-only'
-`], { env: { ...process.env, VAULTBRIDGE_ACL_TEST: directory }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 15000, windowsHide: true });
+`], { env: windowsPowerShellEnvironment({ VAULTBRIDGE_ACL_TEST: directory }), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 15000, windowsHide: true });
     expect(output.trim()).toBe("owner-only");
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 }, 30000);

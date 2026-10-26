@@ -1,5 +1,12 @@
 import { execFileSync } from "node:child_process";
 
+/** PS7 -> Node -> PS5 must not inherit PS7-only module search paths. */
+export function windowsPowerShellEnvironment(additions: NodeJS.ProcessEnv = {}, source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env = { ...source, ...additions };
+  for (const key of Object.keys(env)) if (key.toLowerCase() === "psmodulepath") delete env[key];
+  return env;
+}
+
 /** POSIX mode bits do not secure Windows files. Replace the DACL, do not merely add a grant. */
 export function restrictWindowsAccess(target: string, directory: boolean): void {
   if (process.platform !== "win32") return;
@@ -35,7 +42,7 @@ if ($env:VAULTBRIDGE_PRIVATE_DIRECTORY -eq 'true') {
 `;
   try {
     execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
-      env: { ...process.env, VAULTBRIDGE_PRIVATE_PATH: target, VAULTBRIDGE_PRIVATE_DIRECTORY: String(directory) },
+      env: windowsPowerShellEnvironment({ VAULTBRIDGE_PRIVATE_PATH: target, VAULTBRIDGE_PRIVATE_DIRECTORY: String(directory) }),
       stdio: ["ignore", "pipe", "pipe"], timeout: 15000, windowsHide: true,
     });
   } catch (cause) {

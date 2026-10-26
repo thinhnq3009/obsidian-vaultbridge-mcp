@@ -84,7 +84,8 @@ New POSIX directories/files use 0700/0600. Existing broad permissions, foreign
 ownership, symlinks and hardlinked credential/DB files fail startup rather than
 being trusted. On Windows the directory and existing credential/DB files receive
 an owner-only protected DACL through Windows PowerShell/.NET; new files inherit
-it. Failure to set the DACL fails startup. Use local NTFS app data, not a network
+it. Child PowerShell runs with stdin detached and inherited PSModulePath removed
+so a PowerShell 7 parent cannot redirect Windows PowerShell to incompatible modules. Failure to set the DACL fails startup. Use local NTFS app data, not a network
 share. Administrators/root or processes running as the same OS user remain trusted;
 this service is not a sandbox against a compromised local account. Only one owner
 service/recovery process may open the store at a time (proper-lockfile heartbeat).
