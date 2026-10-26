@@ -1,7 +1,7 @@
 {
   "name": "obsidian-vaultbridge-mcp",
-  "version": "0.1.0-alpha.1",
-  "description": "Connect AI agents to your Obsidian vault through MCP. Early preview with a standalone filesystem backend.",
+  "version": "0.1.0",
+  "description": "Connect AI agents to your Obsidian vault through a standalone, local-first MCP filesystem server.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -83,6 +83,6 @@
   },
   "publishConfig": {
     "access": "public",
-    "tag": "alpha"
+    "tag": "latest"
   }
 }
