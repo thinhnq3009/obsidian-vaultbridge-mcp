@@ -13,7 +13,7 @@ export function authDataDirectory(platform = process.platform, env: NodeJS.Proce
   }
   if (platform === "darwin") return path.join(home, "Library", "Application Support", "ObsidianVaultBridge");
   if (env.XDG_DATA_HOME && !path.isAbsolute(env.XDG_DATA_HOME)) throw new Error("XDG_DATA_HOME must be absolute");
-  return path.join(env.XDG_DATA_HOME ?? path.join(home, ".local", "share"), "obsidian-vaultbridge-mcp");
+  return path.join(env.XDG_DATA_HOME || path.join(home, ".local", "share"), "obsidian-vaultbridge-mcp");
 }
 
 function contains(parent: string, child: string): boolean {

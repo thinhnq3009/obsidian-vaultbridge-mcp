@@ -221,6 +221,7 @@ describe("owner storage and guard contracts", () => {
   it("chooses per-OS app data paths and rejects relative app-data configuration", () => {
     expect(authDataDirectory("linux", { XDG_DATA_HOME: root }, root)).toBe(path.join(root, "obsidian-vaultbridge-mcp"));
     expect(authDataDirectory("linux", {}, root)).toBe(path.join(root, ".local/share/obsidian-vaultbridge-mcp"));
+    expect(authDataDirectory("linux", { XDG_DATA_HOME: "" }, root)).toBe(path.join(root, ".local/share/obsidian-vaultbridge-mcp"));
     expect(authDataDirectory("darwin", {}, root)).toBe(path.join(root, "Library/Application Support/ObsidianVaultBridge"));
     expect(authDataDirectory("win32", { APPDATA: root }, root)).toBe(path.join(root, "ObsidianVaultBridge"));
     expect(() => authDataDirectory("linux", { XDG_DATA_HOME: "relative" }, root)).toThrow("absolute");
