@@ -167,3 +167,46 @@ The original matrix attempt using `better-sqlite3@13.0.3` passed on Linux and ma
 - AUTH-004: immutable request-scoped principal/client/vault context and authorization intersection; no shared mutable identity on the backend.
 - SDK migration PR: separately migrate production HTTP/STDIO with the official codemod only as a reviewed aid; preserve v1/static mode until explicit compatibility and security tests pass.
 - AUTH-005: generic OAuth MCP client E2E, matrix CI, release docs; test ChatGPT only if an actual supported connection succeeds.
+
+### AUTH-SEC-001 P0 — isolated spike rate-limit remediation (2026-10-26)
+
+CodeQL alert #6 identified that the Express `POST /mcp` route invoked
+`requireMcpAuth()` without admission throttling. Better Auth's endpoint limiter
+does not wrap this separate Express handler, and its defaults do not enable
+rate limiting in development/test.
+
+The spike now pins `express-rate-limit@8.7.1` in its **nested** manifest/lockfile.
+Route-local middleware runs before JSON parsing and `requireMcpAuth()`, permits
+four requests per 60-second window, and rejects excess requests with 429 and
+`Retry-After`. A constant key bounds the disposable loopback-only MemoryStore
+to one entry; it is shut down on exit. This intentionally small budget exists
+only to test the boundary quickly; **do not use it as the production MCP
+policy**. The root package, `src/http.ts`, `src/config.ts`, `src/types.ts`,
+STDIO, static Bearer and filesystem policies are unchanged.
+
+Better Auth explicitly enables its independent memory-backed rate limiter in
+all environments (`window: 60`, `max: 60`), retaining built-in endpoint rules.
+A `/get-session` test rule permits two requests per 60 seconds to prove actual
+enforcement without introducing owner accounts or login flows. The adapter
+overwrites a dedicated IP header from `request.socket.remoteAddress` and
+configures Better Auth to use only that header; caller-provided forwarding
+headers cannot create new identities. Better Auth 1.7.13's `X-Retry-After` is
+also exposed as standard `Retry-After` on 429.
+
+The executable smoke assertions cover missing/invalid Bearer → 401 with the
+metadata challenge, the exact MCP budget boundary, sequential/concurrent
+excess → 429 with positive `Retry-After`, spoofed IP/client headers, both
+discovery documents remaining reachable after MCP flooding, and independent
+Better Auth session-endpoint throttling. Linux smoke runs passed on Node
+22.23.4 (test and production) and 24.22.1 (development and production).
+Mutation probes proved the assertions fail if the MCP limiter is bypassed,
+Better Auth limiting is disabled, or the dedicated peer-IP header is accepted
+from the caller. No alert suppression/dismissal was added; latest-head CodeQL
+and OS-matrix results must be verified on the PR before accepting P0.
+
+This is not password-failure-budget, valid OAuth token-to-tool, PKCE, refresh,
+revoke, or multi-agent performance evidence. Continue with AUTH-002 (#46),
+then AUTH-003 (#47) for production `oauth|none|token` configuration and the
+independent configurable RPM/burst/concurrency policies above; AUTH-004/005
+retain request-isolation and realistic load/E2E gates. The proposed 1200 RPM
+production default is still an unbenchmarked starting target.
