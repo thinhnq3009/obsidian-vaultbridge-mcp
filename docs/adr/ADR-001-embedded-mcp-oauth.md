@@ -43,6 +43,46 @@ The existing repository uses `@modelcontextprotocol/sdk ^1.32.2` and a stateless
 
 The OAuth mode MUST fail closed if issuer/resource URL, TLS, first-run owner setup or signing keys are invalid. Never silently fall back to static token or unauthenticated MCP. Avoid public `/setup` or `/admin` routes. Serve metadata under spec-mandated well-known URLs and the provider under `/oauth2/*`; route shape is verified by plugin integration tests rather than hand-coded equivalents.
 
+## Owner revision — explicit OAuth/none/token modes and configurable budgets (2026-10-26)
+
+**Approved requirements / planned work, not yet implemented by AUTH-001 spike:** OAuth is the HTTP default for new v0.2.x installations, but operators MAY explicitly disable authentication. Do not treat no-auth as a CodeQL false-positive exception, and do not confuse brute-force controls with MCP agent throughput.
+
+### Authentication-mode contract
+
+- `MCP_AUTH_MODE=oauth|token|none`; new HTTP install default is `oauth`. `stdio` remains independent, local and unchanged.
+- `oauth`: Better Auth Authorization Code/PKCE with principal/client/scope-bound MCP authorization; no silent downgrade to static-token or anonymous on setup failure, invalid bearer or expired tokens. On first run, guide loopback-only owner setup and fail closed until initialized.
+- `token`: explicitly retain legacy `MCP_AUTH_TOKEN` constant-time Bearer verification for backwards compatibility. A pre-existing install with `MCP_AUTH_TOKEN` set and no explicit mode may resolve to `token` during migration with a clear warning; new installations must choose their mode explicitly. Do not accept token and OAuth simultaneously without a separate reviewed design.
+- `none`: explicit opt-out; fully unauthenticated MCP within the existing global filesystem, read-only and path constraints. Print an unmissable warning at every startup (also persistent UI warning when admin UI exists); disable OAuth login/consent endpoints in this mode. Never silently select `none`.
+- Loopback-only for `none` by default. Allow non-loopback anonymous access only with an additional explicit `MCP_ALLOW_UNAUTHENTICATED_NETWORK=true` acknowledgement AND the established TLS-termination, trusted-host/Origin and deployment allowlist safeguards; always warn of possible complete vault exposure. Absent these gates, reject startup. No public `/setup`/`/admin` in any mode.
+- Refactor `src/config.ts::validateHttpDeployment` so non-loopback does not unconditionally demand `MCP_AUTH_TOKEN` when mode is `oauth`. Evaluate the active mode instead and fail closed on inconsistent combinations. Keep `MCP_HTTP_HOST`, `MCP_ALLOWED_HOSTS`, `MCP_HTTP_TLS_PROXY` validation.
+- Configuration precedence is already CLI flags > process ENV > `.env` > defaults; extend existing Zod schema and CLI mapping. Include e.g. `--auth-mode oauth|token|none`, `--mcp-rpm`, `--mcp-burst`, `--mcp-max-concurrent`, `--login-max-failures`. Environment/CLI changes take effect on next restart; avoid unreviewed hot config mutation.
+
+### Distinct rate-limit layers (tunable starting budgets, not performance guarantees)
+
+| Layer | Suggested starting policy | Key / purpose |
+|---|---|---|
+| Invalid/missing auth to protected MCP | `MCP_UNAUTHENTICATED_ATTEMPT_RPM=60` per IP | Cheap pre-verification throttle; 401 + OAuth challenge remains when under budget |
+| Password login | `MCP_AUTH_LOGIN_MAX_FAILURES=5`, `MCP_AUTH_LOGIN_WINDOW_SECONDS=900`, plus IP-based controls/backoff | Protect against brute-force; never use the generous MCP RPM limit here |
+| OAuth token/authorize/revoke | Reuse Better Auth's built-in per-route policies with rateLimit explicitly enabled even in dev/test, tune only when needed | Avoid duplicate custom OAuth logic; check plugin-specific limits |
+| Aggregate MCP tool traffic | `MCP_RATE_LIMIT_RPM=1200`, `MCP_RATE_LIMIT_BURST=120` | Token-bucket (or equivalent) global protection, sized initially for ~2–3 agents |
+| Per authenticated client | `MCP_AUTHENTICATED_CLIENT_RPM=600` | Fairness per verified OAuth client/principal, not spoofable request header |
+| MCP in-flight | `MCP_MAX_CONCURRENT=32` | Protect server work/memory, independent of RPM; release once on completion/disconnect |
+
+- Approximate sizing: 3 agents x 300 average RPM = 900 RPM; ~30% headroom is ~1,170 RPM, hence 1,200 initial global RPM pending measured latency/CPU/429 benchmarks. Current `src/http.ts` hardcodes 120 RPM for ALL requests and 32 in-flight; migrate the fixed 120 limit to config rather than retaining it alongside new quotas.
+- In `none` mode, don't confuse an untrusted `client_id` header with a verified identity: enforce global and trustworthy source-IP budgets. Multiple agents from one local host must be allowed to share the 1,200 RPM aggregate budget. Never partition access via a user-supplied, unverified value.
+- Protected mode should count failed/absent credentials against a *separate* conservative budget; successful verified agent tool calls use their own larger bucket.
+- Always preserve a finite protective ceiling; config overrides must be validated (positive integers, safe upper bounds); log meaningful warnings for unusually high values. `429` should include `Retry-After`, and health/metadata routing should not be inadvertently broken. Keep burst/concurrency distinct from request rate.
+- Trust source IP only from the actual TCP peer or explicitly configured, validated reverse proxies; do not trust user-supplied forwarding headers. In a single local process an in-memory limiter is adequate; document that distributed/multi-instance deployments need shared enforcement or an upstream gateway.
+- All modes retain host/origin checks, request byte/time budgets, max file size, path and symlink controls, read-only and revision-safe writes. `stdio` behavior remains unchanged.
+
+### Implementation / verification gates
+
+1. **AUTH-001 / PR #50**: protect spike `/mcp` before `requireMcpAuth` with a bounded limiter; explicitly enable Better Auth rate limiting. Keep the 401 `WWW-Authenticate` discovery challenge in normal conditions; verify 429 under flooding. This is an isolated spike, not yet the production mode migration.
+2. **AUTH-002 (#46)**: strict password-guessing protections and first-run owner setup; warn on anonymous mode rather than creating login UI dependencies for users who chose `none`.
+3. **AUTH-003 (#47)**: implement mode resolver, config and CLI mapping, configurable HTTP traffic budgets and OAuth route policies; validate mode/exposure combination and backward compatibility with static token.
+4. **AUTH-004 (#48)**: enforce principal/client-scoped authorization only for OAuth; anonymous operation must continue to honor global vault policy without manufacturing an identity.
+5. **AUTH-005 (#49)**: test 2–3 simulated MCP agents at sustained/peak traffic, mixed anonymous/valid/invalid auth requests, trusted proxies, 401/429 behavior, disabled OAuth endpoint paths, and every supported OS/Node matrix before release.
+
 ## Resource and principal safety boundary
 
 1. Token verification binds issuer, audience / resource (canonical `https://host/mcp`), expiry and scope. Scope approval and refresh/revocation are durable.
