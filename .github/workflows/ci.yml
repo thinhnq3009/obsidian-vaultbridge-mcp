@@ -27,6 +27,7 @@ jobs:
       - run: npm --prefix scripts/spikes/better-auth-sdk-v2 run smoke
       - run: npm run build
       - run: node --input-type=module -e "import('./dist/runtime.js').then(m => m.assertSupportedNode())"
+      - run: npx vitest run test/windowsPermissions.test.ts
       - run: npm test -- --maxWorkers=2
       - run: npm run lint
       - run: npm pack --dry-run
