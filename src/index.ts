@@ -9,6 +9,11 @@ import { createServer } from "./server.js";
 
 async function main() {
   assertSupportedNode();
+  if (process.argv[2] === "owner-auth") {
+    const { runOwnerCommand } = await import("./auth/cli.js");
+    await runOwnerCommand(process.argv.slice(3));
+    return;
+  }
   const config = loadConfig();
 
   if (config.mcpTransport === "http") {

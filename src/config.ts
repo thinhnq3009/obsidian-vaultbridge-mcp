@@ -175,7 +175,7 @@ export function parseCliArgs(argv: string[]): CliOverrides {
   return overrides;
 }
 
-function loadDotEnvFile(): Record<string, string> {
+export function loadDotEnvFile(): Record<string, string> {
   const filePath = path.resolve(process.cwd(), ".env");
   if (!fs.existsSync(filePath)) return {};
   const result: Record<string, string> = {};
