@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "smoke": "node smoke.mjs",
+    "probe:revocation": "node lifecycle-revocation.mjs",
     "codemod:dry-run": "mcp-codemod v1-to-v2 --dry-run ../../.."
   },
   "engines": {

@@ -1,5 +1,13 @@
 # ADR-001 — Embedded MCP OAuth, SQLite and SDK v2
 
+> **AUTH-003 implementation gate (2026-10-27):** The disposable
+> [JWT revocation probe](AUTH-003-jwt-revocation-blocker.md) reproduces a
+> provider contract blocker on Better Auth 1.7.13 and 1.7.14. JWT revocation
+> returns `unsupported_token_type`, and access JWTs remain accepted after
+> refresh revocation/reuse. Production OAuth is **not** implemented by this
+> investigation. The approved framework remains unchanged; owner decision is
+> required before selecting a supported token-format/revocation policy.
+
 - Status: **ACCEPTED architecture / IMPLEMENTATION SPIKE IN PROGRESS** (2026-10-25)
 - Issue: [AUTH-001 #45](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/45), parent [#39](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/39)
 - Source baseline: `develop@98b33c8b84f8d7c475a11ed1916fbb88c4c7376b`
