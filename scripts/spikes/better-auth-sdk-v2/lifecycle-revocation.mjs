@@ -20,9 +20,12 @@ import { DatabaseSync } from "node:sqlite";
 import express from "express";
 import { MemoryStore, rateLimit } from "express-rate-limit";
 import { betterAuth } from "better-auth";
+import { APIError, createAuthEndpoint, isAPIError } from "better-auth/api";
+import { createInsufficientScopeError } from "better-auth/oauth2";
 import { jwt } from "better-auth/plugins";
 import { cimd } from "@better-auth/cimd";
-import { mcp, requireMcpAuth } from "@better-auth/mcp";
+import { createResourceServerChallenge, getOAuthProviderApi } from "@better-auth/oauth-provider";
+import { createMcpProtectedRequestHandler, mcp, requireMcpAuth } from "@better-auth/mcp";
 import { CLIENT_CAPABILITIES_META_KEY, CLIENT_INFO_META_KEY, createMcpHandler, McpServer, PROTOCOL_VERSION_META_KEY } from "@modelcontextprotocol/server";
 import { z } from "zod";
 
@@ -33,6 +36,8 @@ const limiterStore = new MemoryStore();
 const clientId = "https://auth003-client.example/metadata.json";
 const redirectUri = "http://127.0.0.1:49152/callback";
 const failures = [];
+const localOpaque = process.argv.includes("--opaque-local");
+const opaque = localOpaque || process.argv.includes("--opaque");
 const versionOf = (name) => JSON.parse(readFileSync(new URL("../package.json", import.meta.resolve(name)), "utf8")).version;
 const versions = {
   betterAuth: versionOf("better-auth"), mcp: versionOf("@better-auth/mcp"),
@@ -46,6 +51,7 @@ try {
   let auth;
   let baseURL;
   let resource;
+  let introspectionClient;
   function fetchLocal(input, init = {}) {
     const url = new URL(input);
     assert.equal(url.origin, baseURL, "Probe requests must stay on the disposable loopback listener");
@@ -65,7 +71,7 @@ try {
     next();
   });
   app.use(rateLimit({
-    windowMs: 60_000, limit: 120, keyGenerator: () => "disposable-loopback-probe",
+    windowMs: 60_000, limit: 240, keyGenerator: () => "disposable-loopback-probe",
     store: limiterStore, standardHeaders: "draft-8", legacyHeaders: false,
   }));
   app.use(express.json({ limit: "8kb", inflate: false }));
@@ -102,12 +108,61 @@ try {
     }));
     return server;
   }, { legacy: "reject" });
+  async function protect(request, handler, options = {}) {
+    if (!opaque) return requireMcpAuth(auth, handler, { resource, ...options })(request);
+    if (localOpaque) {
+      // A second, documented integration seam. The provider owns token lookup,
+      // active/session/client checks and expiry; the resource server checks its
+      // own required issuer/audience/scopes. No minting or revocation is added.
+      try {
+        const token = /^Bearer ([A-Za-z0-9_-]{1,8192})$/u.exec(request.headers.get("authorization") ?? "")?.[1];
+        if (!token) throw new APIError("UNAUTHORIZED", { message: "Invalid access token" });
+        const claims = await auth.api.probeActiveAccessToken({ body: { token } });
+        const audience = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+        if (claims.iss !== (options.issuer ?? (await auth.$context).baseURL)
+          || !audience.includes(options.resource ?? resource)
+          || !Number.isSafeInteger(claims.exp) || claims.exp <= Date.now() / 1000
+          || typeof claims.sub !== "string" || typeof claims.azp !== "string"
+          || claims.cnf !== undefined) {
+          throw new APIError("UNAUTHORIZED", { message: "Invalid access token" });
+        }
+        const scopes = new Set(typeof claims.scope === "string" ? claims.scope.split(" ") : []);
+        const missingScopes = (options.requiredScopes ?? []).filter((scope) => !scopes.has(scope));
+        if (missingScopes.length) throw createInsufficientScopeError(missingScopes);
+        return handler(request, claims);
+      } catch (error) {
+        if (!isAPIError(error)) throw error;
+        const challenge = createResourceServerChallenge(error, resource);
+        if (!challenge) throw error;
+        return Response.json({ error: "Access denied" }, { status: challenge.statusCode, headers: challenge.headers });
+      }
+    }
+    // Official MCP middleware + official RFC 7662 endpoint, not a custom token
+    // validator. The confidential resource client is created via the provider's
+    // server-only API, never through an exposed registration/admin route.
+    return createMcpProtectedRequestHandler({
+      issuer: options.issuer ?? (await auth.$context).baseURL,
+      audience: options.resource ?? resource,
+      requiredScopes: options.requiredScopes,
+      remoteVerify: {
+        introspectUrl: `${baseURL}/api/auth/oauth2/introspect`,
+        clientId: introspectionClient.client_id,
+        clientSecret: introspectionClient.client_secret,
+        force: true,
+      },
+    }, handler)(request);
+  }
   app.post("/mcp", async (request, response) => {
-    const result = await requireMcpAuth(auth, (verified) => mcpHandler.fetch(verified), {
-      resource, requiredScopes: ["mcp:tools"],
-    })(webRequest(request));
+    const result = await protect(webRequest(request), (verified) => mcpHandler.fetch(verified), {
+      requiredScopes: ["mcp:tools"],
+    });
     await send(result, response);
   });
+  if (opaque) {
+    app.post("/negative/jwt-only", async (request, response) => {
+      await send(await requireMcpAuth(auth, () => Response.json({ unexpected: true }), { resource })(webRequest(request)), response);
+    });
+  }
   // Exercise the same maintained verifier with deliberately wrong expectations.
   for (const [suffix, verification] of [
     ["wrong-audience", { resource: "https://other-resource.example/mcp" }],
@@ -115,9 +170,7 @@ try {
     ["wrong-scope", { requiredScopes: ["mcp:admin"] }],
   ]) {
     app.post(`/negative/${suffix}`, async (request, response) => {
-      await send(await requireMcpAuth(auth, () => Response.json({ unexpected: true }), {
-        resource, ...verification,
-      })(webRequest(request)), response);
+      await send(await protect(webRequest(request), () => Response.json({ unexpected: true }), verification), response);
     });
   }
   // Only library routes needed by this isolated probe; no public signup/admin.
@@ -128,6 +181,7 @@ try {
     "/api/auth/jwks", "/api/auth/sign-in/email", "/api/auth/oauth2/authorize",
     "/api/auth/oauth2/consent", "/api/auth/oauth2/token", "/api/auth/oauth2/revoke",
   ]);
+  if (opaque) providerPaths.add("/api/auth/oauth2/introspect");
   app.use(async (request, response) => {
     if (!providerPaths.has(request.path)) { response.sendStatus(404); return; }
     await send(await auth.handler(webRequest(request)), response);
@@ -143,6 +197,16 @@ try {
   assert.ok(address && typeof address !== "string");
   baseURL = `http://127.0.0.1:${address.port}`;
   resource = `${baseURL}/mcp`;
+  const provider = mcp({
+    loginPage: "/login", consentPage: "/consent", resource,
+    scopes: ["mcp:tools", "offline_access"],
+    grantTypes: ["authorization_code", "refresh_token"],
+    codeExpiresIn: 60, accessTokenExpiresIn: 300,
+    refreshTokenReuseInterval: 0,
+    allowDynamicClientRegistration: false,
+    allowUnauthenticatedClientRegistration: false,
+    disableJwtPlugin: opaque,
+  });
   auth = betterAuth({
     appName: "AUTH-003 disposable prerequisite probe",
     baseURL, secret: randomBytes(48).toString("base64url"), database,
@@ -153,15 +217,7 @@ try {
     rateLimit: { enabled: true, storage: "memory", window: 60, max: 60 },
     plugins: [
       jwt(),
-      mcp({
-        loginPage: "/login", consentPage: "/consent", resource,
-        scopes: ["mcp:tools", "offline_access"],
-        grantTypes: ["authorization_code", "refresh_token"],
-        codeExpiresIn: 60, accessTokenExpiresIn: 300,
-        refreshTokenReuseInterval: 0,
-        allowDynamicClientRegistration: false,
-        allowUnauthenticatedClientRegistration: false,
-      }),
+      provider,
       cimd({
         metadataProfile: "mcp-2026-07-28",
         async fetchClientMetadataResource(input) {
@@ -176,6 +232,15 @@ try {
           });
         },
       }),
+      ...(localOpaque ? [{
+        id: "auth-003-read-only-provider-probe",
+        endpoints: {
+          probeActiveAccessToken: createAuthEndpoint("/probe/active-access-token", {
+            method: "POST", body: z.object({ token: z.string().max(8192) }),
+            metadata: { SERVER_ONLY: true },
+          }, async (ctx) => getOAuthProviderApi(ctx, provider.options).requireActiveAccessToken(ctx.body.token)),
+        },
+      }] : []),
     ],
   });
   const context = await auth.$context;
@@ -206,6 +271,19 @@ try {
   assert.equal(login.status, 200, "Disposable owner login");
   const cookie = login.headers.getSetCookie().map((value) => value.split(";")[0]).join("; ");
   assert.ok(cookie.length > 0, "Login must issue a browser session cookie");
+  if (opaque && !localOpaque) {
+    introspectionClient = await auth.api.adminCreateOAuthClient({
+      headers: new Headers({ cookie, origin: baseURL }),
+      body: {
+        client_name: "Disposable resource-server introspection client",
+        redirect_uris: ["https://auth003-resource.example/callback"],
+        token_endpoint_auth_method: "client_secret_post",
+        grant_types: ["authorization_code", "refresh_token"],
+        scope: "mcp:tools offline_access", resources: [resource],
+      },
+    });
+    assert.equal(typeof introspectionClient.client_secret, "string", "Confidential introspection client required");
+  }
   const metadataResponse = await fetchLocal(`${baseURL}/.well-known/oauth-protected-resource/mcp`);
   assert.equal(metadataResponse.status, 200);
   const metadata = await metadataResponse.json();
@@ -308,21 +386,42 @@ try {
     });
   }
   const missing = await tool();
-  assert.equal(missing.status, 401);
+  assert.equal(missing.status, 401, "Missing bearer must be challenged");
   assert.match(missing.headers.get("www-authenticate"), /resource_metadata=/u);
   const invalid = await tool("invalid");
-  assert.equal(invalid.status, 401);
+  if (opaque && invalid.status !== 401) failures.push({
+    contract: "Opaque invalid bearer gets a discovery challenge",
+    expectedStatus: 401, actualStatus: invalid.status,
+  });
+  else assert.equal(invalid.status, 401, "Invalid bearer must be challenged");
   const tokens = await exchange(await grant());
+  if (opaque) assert.ok(!tokens.access_token.includes("."), "Provider must issue opaque access tokens");
+  if (localOpaque) {
+    const internalEndpoint = await jsonPost("/api/auth/probe/active-access-token", { token: "invalid" });
+    assert.equal(internalEndpoint.status, 404, "Server-only active-token capability must never be mounted publicly");
+  }
   const accepted = await tool(tokens.access_token);
   assert.equal(accepted.status, 200, "Fresh access token must reach SDK v2");
   const acceptedBody = await accepted.json();
   assert.equal(acceptedBody.result?.content?.[0]?.text, "pong", "Actual generic MCP tool invocation");
+  if (opaque) {
+    const jwtOnly = await fetchLocal(`${baseURL}/negative/jwt-only`, {
+      method: "POST", headers: { authorization: `Bearer ${tokens.access_token}` },
+    });
+    assert.equal(jwtOnly.status, 401, "JWT-only requireMcpAuth must not accept an opaque token");
+  }
   for (const [suffix, status] of [["wrong-audience", 401], ["wrong-issuer", 401], ["wrong-scope", 403]]) {
     const rejected = await fetchLocal(`${baseURL}/negative/${suffix}`, {
       method: "POST", headers: { authorization: `Bearer ${tokens.access_token}` },
     });
-    assert.equal(rejected.status, status, `${suffix} denied by maintained verifier`);
-    assert.match(rejected.headers.get("www-authenticate"), /resource_metadata=/u);
+    if (opaque && rejected.status !== status) failures.push({
+      contract: `Opaque ${suffix} rejection challenge`,
+      expectedStatus: status, actualStatus: rejected.status,
+    });
+    else {
+      assert.equal(rejected.status, status, `${suffix} denied by maintained verifier`);
+      assert.match(rejected.headers.get("www-authenticate"), /resource_metadata=/u);
+    }
   }
   const refresh = await formPost("token", {
     grant_type: "refresh_token", refresh_token: tokens.refresh_token, resource,
@@ -333,14 +432,23 @@ try {
   const revokeAccess = await formPost("revoke", { token: rotated.access_token, token_type_hint: "access_token" });
   const revokeAccessBody = revokeAccess.status === 200 ? {} : await revokeAccess.json();
   if (revokeAccess.status !== 200) failures.push({
-    contract: "JWT access-token revocation",
+    contract: `${opaque ? "Opaque" : "JWT"} access-token revocation`,
     expectedStatus: 200, actualStatus: revokeAccess.status,
     error: revokeAccessBody.error,
     description: revokeAccessBody.error_description,
   });
-  const revokeRefresh = await formPost("revoke", { token: rotated.refresh_token, token_type_hint: "refresh_token" });
+  if (opaque) assert.equal((await tool(rotated.access_token)).status, 401, "Revoked opaque access token immediately denied");
+  // Mint a fresh child before refresh revocation, so the earlier direct-access
+  // revocation cannot make this independent refresh test pass accidentally.
+  const secondRefresh = await formPost("token", {
+    grant_type: "refresh_token", refresh_token: rotated.refresh_token, resource,
+  });
+  assert.equal(secondRefresh.status, 200, "Second rotation must mint a fresh access credential");
+  const current = await secondRefresh.json();
+  assert.equal((await tool(current.access_token)).status, 200, "Current family access starts active");
+  const revokeRefresh = await formPost("revoke", { token: current.refresh_token, token_type_hint: "refresh_token" });
   assert.equal(revokeRefresh.status, 200, "Refresh token revocation");
-  const afterRevocation = await tool(rotated.access_token);
+  const afterRevocation = await tool(current.access_token);
   if (afterRevocation.status !== 401) {
     if (afterRevocation.status === 200) {
       assert.equal((await afterRevocation.json()).result?.content?.[0]?.text, "pong", "Revocation failure must demonstrate an actual tool call");
@@ -350,24 +458,59 @@ try {
       expectedStatus: 401, actualStatus: afterRevocation.status,
     });
   }
+  if (opaque) {
+    for (const denied of await Promise.all(Array.from({ length: 3 }, () => tool(current.access_token)))) {
+      assert.equal(denied.status, 401, "Concurrent calls with a revoked child credential denied");
+    }
+  }
+  // A refresh family includes credentials issued before rotation, not just the
+  // access token attached to the latest refresh row. Do not let direct access
+  // revocation above mask this independent grant/family check.
+  if (opaque) {
+    const earlierCalls = await Promise.all(Array.from({ length: 3 }, () => tool(tokens.access_token)));
+    for (const earlierAccess of earlierCalls) {
+      if (earlierAccess.status === 200) assert.equal((await earlierAccess.json()).result?.content?.[0]?.text, "pong", "Earlier family access really reaches the tool");
+    }
+    const unexpected = earlierCalls.find((response) => response.status !== 401);
+    if (unexpected) {
+      failures.push({
+        contract: "Pre-rotation access token rejected immediately after refresh-family revocation",
+        expectedStatus: 401, actualStatus: unexpected.status,
+        acceptedConcurrentToolCalls: earlierCalls.filter((response) => response.status === 200).length,
+      });
+    }
+  }
   const revokedRefresh = await formPost("token", {
-    grant_type: "refresh_token", refresh_token: rotated.refresh_token, resource,
+    grant_type: "refresh_token", refresh_token: current.refresh_token, resource,
   });
   assert.equal(revokedRefresh.status, 400, "Revoked refresh denied, not rate limited");
+  // Separate grant: reuse detection must invalidate a still-live child, not
+  // merely return an error for a family a previous revocation already removed.
+  const reuseTokens = await exchange(await grant());
+  const reuseRotation = await formPost("token", {
+    grant_type: "refresh_token", refresh_token: reuseTokens.refresh_token, resource,
+  });
+  assert.equal(reuseRotation.status, 200, "Independent reuse family rotation");
+  const reuseChild = await reuseRotation.json();
+  assert.equal((await tool(reuseChild.access_token)).status, 200, "Reuse family child starts active");
   const reuse = await formPost("token", {
-    grant_type: "refresh_token", refresh_token: tokens.refresh_token, resource,
+    grant_type: "refresh_token", refresh_token: reuseTokens.refresh_token, resource,
   });
   assert.equal(reuse.status, 400, "Rotated refresh reuse denied, not rate limited");
-  const afterReuse = await tool(tokens.access_token);
+  const afterReuse = await tool(reuseChild.access_token);
   if (afterReuse.status !== 401) {
     if (afterReuse.status === 200) {
       assert.equal((await afterReuse.json()).result?.content?.[0]?.text, "pong", "Refresh reuse failure must demonstrate an actual tool call");
     }
     failures.push({
-      contract: "Original access token rejected after refresh reuse detection",
+      contract: "Live child access token rejected after refresh reuse detection",
       expectedStatus: 401, actualStatus: afterReuse.status,
     });
   }
+  const refreshAfterReuse = await formPost("token", {
+    grant_type: "refresh_token", refresh_token: reuseChild.refresh_token, resource,
+  });
+  assert.equal(refreshAfterReuse.status, 400, "Reuse detection invalidates the live refresh child");
   const badVerifierGrant = await grant();
   const badVerifier = await formPost("token", {
     grant_type: "authorization_code", code: badVerifierGrant.code,
@@ -397,11 +540,22 @@ try {
     code_verifier: expiredGrant.verifier, redirect_uri: redirectUri, resource,
   });
   assert.equal(expired.status, 400, "Expired authorization code denied");
+  if (opaque) {
+    const expiringAccess = await exchange(await grant());
+    // Disposable fault injection. Verification still goes through the provider
+    // APIs and never accepts expired credentials or bypasses the normal flow.
+    database.prepare("UPDATE oauthAccessToken SET expiresAt = ? WHERE clientId = ?")
+      .run(Date.now() - 60_000, clientId);
+    assert.equal((await tool(expiringAccess.access_token)).status, 401, "Expired opaque access token denied");
+  }
   process.stdout.write(`${JSON.stringify({
     task: "AUTH-003", status: failures.length ? "BLOCKED" : "PASS", node: process.version,
+    tokenFormat: opaque ? "opaque" : "jwt",
+    verifier: localOpaque ? "getOAuthProviderApi.requireActiveAccessToken + resource policy"
+      : opaque ? "createMcpProtectedRequestHandler + forced provider introspection" : "requireMcpAuth",
     ...versions,
     isolated: true, productionIntegrated: false, cimdTransport: "fixture, no remote network",
-    passed: [
+    exercised: [
       "temporary SQLite + provider migrations", "password login",
       "RFC 9728 and authorization-server discovery", "CIMD profile, DCR disabled",
       "signed consent query/state tampering denied", "S256 code exchange",
@@ -410,6 +564,7 @@ try {
       "missing/invalid bearer challenge", "generic SDK v2 tool invocation",
       "wrong issuer/audience/scope denied",
       "refresh rotation", "revoked refresh denied", "rotated refresh reuse denied",
+      ...(opaque ? ["JWT-only middleware rejects opaque tokens", "immediate opaque access revocation", "concurrent revoked-child calls denied", "opaque access expiry denied"] : []),
     ],
     failures,
   }, null, 2)}\n`);

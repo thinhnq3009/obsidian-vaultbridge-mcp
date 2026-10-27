@@ -2,6 +2,13 @@
 
 **Status: BLOCKED / NOT IMPLEMENTED IN PRODUCTION — October 27, 2026.**
 
+> **Continuation:** The owner authorized opaque-token investigation. Opaque
+> issuance and immediate individual revocation now work with supported
+> verification APIs, but whole-refresh-family revocation still fails. See
+> [the continuation evidence](#continuation--opaque-access-tokens). No repeated
+> approval of the opaque-token investigation is needed; the remaining gate is
+> provider semantics, not permission to investigate.
+
 Refs #47. Base: `develop@983bd50`. Working branch:
 `feat/issue-47-mcp-oauth`.
 
@@ -163,3 +170,163 @@ exited **1**, with the same three failures. Node 22 emits the known
 These are local results, not macOS/Windows or latest-PR CI evidence. The new
 probe deliberately remains outside the existing green baseline; #47 is still
 open and the investigation PR must remain draft pending the owner decision.
+
+## Continuation — opaque access tokens
+
+### Supported configurations investigated
+
+The same diagnostic now supports three explicit modes:
+
+```sh
+npm ci --prefix scripts/spikes/better-auth-sdk-v2
+npm --prefix scripts/spikes/better-auth-sdk-v2 run probe:revocation
+npm --prefix scripts/spikes/better-auth-sdk-v2 run probe:opaque
+npm --prefix scripts/spikes/better-auth-sdk-v2 run probe:opaque-local
+```
+
+- `probe:revocation` preserves the JWT baseline.
+- `probe:opaque` uses provider `disableJwtPlugin: true` for OAuth access
+  issuance (with `jwt()` still installed), and the official MCP
+  `createMcpProtectedRequestHandler()` with forced RFC 7662 introspection.
+  A confidential resource-server client is created using the provider's
+  server-only `adminCreateOAuthClient` API, with resource links and
+  `client_secret_post` as required by the maintained introspection helper.
+  Registration/admin are not exposed over the test listener; credentials stay
+  in the disposable process. No positive introspection cache is used.
+- `probe:opaque-local` exercises the documented public
+  `getOAuthProviderApi(ctx, provider.options).requireActiveAccessToken()` API
+  from a server-only, read-only companion endpoint. The application verifies
+  the provider-returned issuer, audience, expiry and required scopes and uses
+  the provider's challenge builder. It does not mint, rotate or revoke tokens.
+  Unknown/inactive tokens, missing credentials and unsupported sender
+  constraints fail closed; resource-policy failures do not become anonymous.
+  The companion API is not exposed over HTTP, as tested by a 404.
+
+`requireMcpAuth()` itself remains JWT-only: the diagnostic explicitly verifies
+that it rejects the issued opaque token. The two alternate paths above avoid
+that incompatibility using documented APIs rather than a second OAuth provider,
+custom cryptography, a fork, a private provider import or direct database token
+validation. All issuance, PKCE, consent, rotation and revocation still belong
+to the single `mcp()` provider.
+
+Reference API contracts:
+
+- Better Auth OAuth Provider documentation, “Provider capabilities outside a
+  grant”, “Introspect Endpoint”, “Revoke Endpoint”, and `disableJwtPlugin`.
+- The installed 1.7.13/1.7.14 public exports/types for
+  `getOAuthProviderApi`, `createResourceServerChallenge`, and the MCP
+  `createMcpProtectedRequestHandler` options.
+
+### Narrower, still-blocking result
+
+Both opaque paths successfully issue a resource-bound access token, call the
+SDK v2 fixture tool, revoke that access token and reject its immediate reuse.
+The independent current-refresh test mints another live child before revoking
+its refresh token, so the earlier direct-access revocation cannot mask a
+failure. The freshly minted child is denied after refresh revocation, including
+three concurrent tool requests.
+
+**However, the earlier access token from the same rotated family remains
+active. Three concurrent requests made after the successful refresh-revocation
+response all return 200 with `pong`, instead of 401.** The same provider APIs
+accept it without any cache. Reusing a rotated refresh token subsequently
+invalidates the live family, but ordinary explicit revocation does not
+invalidate all earlier access credentials.
+
+The reuse-detection test now uses a separate live grant: it proves a live
+access/refresh child works before replay and is denied afterwards, rather than
+mistaking an already-revoked family's error response for reuse detection.
+Access expiry is also tested through provider verification after disposable
+expiry fault injection. Missing/plain PKCE, tampered state, wrong
+resource/redirect/verifier, consumed/expired code and scope negatives remain.
+
+The HTTP introspection middleware additionally returns **500** instead of a
+401 discovery challenge for mismatching expected issuer/audience. These
+requests do not reach the tool, but still violate the requested challenge
+contract. The documented in-process API plus resource policy returns the
+correct 401/403 responses, so this response-mapping issue is **not** the
+fundamental remaining blocker.
+
+### Exact cause and recommended solution
+
+`revokeRefreshToken()` deletes opaque access rows only where `refreshId` equals
+the supplied refresh row's ID. Rotation creates new refresh rows and leaves
+older access tokens linked to their earlier row. Thus revoking the current
+refresh row does not touch those older access credentials.
+
+Neither HTTP introspection nor `requireActiveAccessToken()` can infer an
+unstored whole-family revocation: the old access row and browser session are
+still active. The public provider capability surface offers token validation
+but no whole-family revocation operation. The broader private
+`invalidateRefreshFamily()` path is triggered by reuse detection, not normal
+revocation; importing/calling it or manufacturing reuse would not be a
+supported production integration.
+
+**Recommended unblock:** obtain a maintained provider change that atomically
+invalidates the entire authorization grant/family on explicit refresh
+revocation, including all access/refresh descendants across rotations. It
+should use durable grant/family identity (the existing authorization-code
+lineage is available), validate caller ownership, retain replay evidence, and
+coordinate invalidation with rotation. Verify the pinned release with these
+same probes before production integration. A separately reviewed provider
+patch could be evaluated, but none is silently shipped here.
+
+Ending the owner's entire login session is a supported, coarser control, not a
+drop-in replacement for a client's refresh-family revocation. Do not silently
+log out unrelated grants, make clients retain/revoke an old rotated token,
+wait for expiry, rewrite provider tables in production, or redefine the
+whole-family requirement to claim this resolved. The provider's documented
+token-specific behavior is not presented as a newly discovered vulnerability;
+it does not satisfy this project's stronger family-revocation contract.
+
+Production remains unchanged because step 2 of the continuation is conditional
+on resolving this gate. No AUTH-004 work was started.
+
+### CI gate
+
+`.github/workflows/auth003-revocation-gate.yml` now runs
+`probe:opaque-local` on Ubuntu/macOS/Windows × Node 22.23.4/24.22.1 when the
+probe/lockfile/workflow changes. It is deliberately **red** until the actual
+family-revocation requirement passes. There is no inverted assertion,
+`continue-on-error`, swallowed exit code, disabled provider limiter or
+suppression. This supersedes the historical observation above that only the
+green baseline ran in CI.
+
+### Continuation validation — local Linux
+
+| Provider set | Node runtimes | Probe | Result |
+| --- | --- | --- | --- |
+| Aligned 1.7.13 | 22.23.4 and 24.22.1 | JWT baseline | BLOCKED / exit 1; three lifecycle failures |
+| Aligned 1.7.13 | 22.23.4 and 24.22.1 | Opaque + HTTP introspection | BLOCKED / exit 1; family failure and two incorrect 500 challenges |
+| Aligned 1.7.13 | 22.23.4 and 24.22.1 | Opaque + public in-process API | BLOCKED / exit 1; family failure only |
+| Aligned 1.7.14, separate disposable install | 22.23.4 and 24.22.1 | Opaque + HTTP introspection | Same three failures / exit 1 |
+| Aligned 1.7.14, separate disposable install | 22.23.4 and 24.22.1 | Opaque + public in-process API | Same family failure / exit 1 |
+
+All ten runs reached their lifecycle assertions; none exited 2 for an
+inconclusive prerequisite failure. In every opaque run the three pre-rotation
+tool calls after current-refresh revocation returned actual `pong` results.
+
+Fresh continuation regressions on **both** supported runtimes:
+
+- `npm run lint` and `npm run build`: PASS.
+- `npm test -- --maxWorkers=2`: PASS, **28 suites, 547 passed and one
+  Windows-only skipped (548 total)** per runtime.
+- `npm run smoke:package`: PASS for both CLI aliases and packaged STDIO tool
+  round trips; package-content allowlist passed.
+- Unchanged AUTH-001 `npm --prefix scripts/spikes/better-auth-sdk-v2 run smoke`:
+  PASS.
+- `node --check scripts/spikes/better-auth-sdk-v2/lifecycle-revocation.mjs`:
+  PASS.
+- `npm pack --dry-run`, `git diff --check`, YAML parsing and the unmasked
+  six-cell CI gate configuration: PASS.
+- Root full/production-only and isolated spike audits: **zero vulnerabilities**
+  at this verification time.
+
+The nested manifest/lockfile now directly pins the already-installed
+`@better-auth/oauth-provider@1.7.13`, because the diagnostic uses its public
+API. No production dependency or schema changed. The test admission ceiling is
+240 requests/minute for its expanded finite diagnostic workload, not the
+production MCP budget requested by AUTH-003. The new contract CI gate must be
+reported separately from baseline CI: it is expected to fail until a maintained
+provider implementation satisfies whole-family revocation. No production
+readiness, browser/CIMD-network interoperability or load benchmark is claimed.
