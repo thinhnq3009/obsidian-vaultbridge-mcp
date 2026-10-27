@@ -35,3 +35,7 @@ jobs:
       - run: npm ci --prefix scripts/spikes/better-auth-sdk-v2
       - run: node --check scripts/spikes/better-auth-sdk-v2/lifecycle-revocation.mjs
       - run: npm --prefix scripts/spikes/better-auth-sdk-v2 run probe:opaque-local
+      # Collect concurrency evidence even while the lifecycle assertion is red.
+      # Both steps retain their real exit codes; neither failure is suppressed.
+      - if: ${{ !cancelled() }}
+        run: npm --prefix scripts/spikes/better-auth-sdk-v2 run probe:concurrency

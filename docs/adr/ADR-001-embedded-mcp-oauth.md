@@ -9,6 +9,9 @@
 > continuation proved opaque issuance and supported active-token verification,
 > but explicit refresh revocation still leaves pre-rotation access tokens usable.
 > Whole-family revocation remains a production gate; see the same evidence note.
+> The supported-API/release investigation and concurrent refresh/revoke probes
+> still block adoption; see
+> [provider-family research and review recommendation](AUTH-003-provider-family-revocation-research.md).
 
 - Status: **ACCEPTED architecture / IMPLEMENTATION SPIKE IN PROGRESS** (2026-10-25)
 - Issue: [AUTH-001 #45](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/45), parent [#39](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/39)

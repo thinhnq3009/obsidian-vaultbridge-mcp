@@ -34,10 +34,13 @@ const database = new DatabaseSync(path.join(directory, "auth.sqlite"));
 database.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
 const limiterStore = new MemoryStore();
 const clientId = "https://auth003-client.example/metadata.json";
+const otherClientId = "https://auth003-other-client.example/metadata.json";
 const redirectUri = "http://127.0.0.1:49152/callback";
 const failures = [];
+const observations = [];
 const localOpaque = process.argv.includes("--opaque-local");
 const opaque = localOpaque || process.argv.includes("--opaque");
+const concurrencyOnly = process.argv.includes("--concurrency");
 const versionOf = (name) => JSON.parse(readFileSync(new URL("../package.json", import.meta.resolve(name)), "utf8")).version;
 const versions = {
   betterAuth: versionOf("better-auth"), mcp: versionOf("@better-auth/mcp"),
@@ -48,6 +51,7 @@ let listener;
 let mcpHandler;
 
 try {
+  assert.ok(!concurrencyOnly || localOpaque, "Concurrency suite requires --opaque-local");
   let auth;
   let baseURL;
   let resource;
@@ -223,9 +227,9 @@ try {
         async fetchClientMetadataResource(input) {
           // Deliberately no network call. Production must use the Node SSRF-safe
           // transport; accepting this fixture transport there would be unsafe.
-          assert.equal(String(input), clientId);
+          assert.ok([clientId, otherClientId].includes(String(input)), "Only fixture clients may resolve");
           return Response.json({
-            client_id: clientId, client_name: "AUTH-003 fixture",
+            client_id: String(input), client_name: "AUTH-003 fixture",
             redirect_uris: [redirectUri], application_type: "native",
             grant_types: ["authorization_code", "refresh_token"],
             response_types: ["code"], token_endpoint_auth_method: "none",
@@ -385,177 +389,293 @@ try {
       }),
     });
   }
-  const missing = await tool();
-  assert.equal(missing.status, 401, "Missing bearer must be challenged");
-  assert.match(missing.headers.get("www-authenticate"), /resource_metadata=/u);
-  const invalid = await tool("invalid");
-  if (opaque && invalid.status !== 401) failures.push({
-    contract: "Opaque invalid bearer gets a discovery challenge",
-    expectedStatus: 401, actualStatus: invalid.status,
-  });
-  else assert.equal(invalid.status, 401, "Invalid bearer must be challenged");
-  const tokens = await exchange(await grant());
-  if (opaque) assert.ok(!tokens.access_token.includes("."), "Provider must issue opaque access tokens");
-  if (localOpaque) {
-    const internalEndpoint = await jsonPost("/api/auth/probe/active-access-token", { token: "invalid" });
-    assert.equal(internalEndpoint.status, 404, "Server-only active-token capability must never be mounted publicly");
-  }
-  const accepted = await tool(tokens.access_token);
-  assert.equal(accepted.status, 200, "Fresh access token must reach SDK v2");
-  const acceptedBody = await accepted.json();
-  assert.equal(acceptedBody.result?.content?.[0]?.text, "pong", "Actual generic MCP tool invocation");
-  if (opaque) {
-    const jwtOnly = await fetchLocal(`${baseURL}/negative/jwt-only`, {
-      method: "POST", headers: { authorization: `Bearer ${tokens.access_token}` },
-    });
-    assert.equal(jwtOnly.status, 401, "JWT-only requireMcpAuth must not accept an opaque token");
-  }
-  for (const [suffix, status] of [["wrong-audience", 401], ["wrong-issuer", 401], ["wrong-scope", 403]]) {
-    const rejected = await fetchLocal(`${baseURL}/negative/${suffix}`, {
-      method: "POST", headers: { authorization: `Bearer ${tokens.access_token}` },
-    });
-    if (opaque && rejected.status !== status) failures.push({
-      contract: `Opaque ${suffix} rejection challenge`,
-      expectedStatus: status, actualStatus: rejected.status,
-    });
-    else {
-      assert.equal(rejected.status, status, `${suffix} denied by maintained verifier`);
-      assert.match(rejected.headers.get("www-authenticate"), /resource_metadata=/u);
+  async function expectAccessDenied(accessToken, contract) {
+    const response = await tool(accessToken);
+    if (response.status === 200) {
+      assert.equal((await response.json()).result?.content?.[0]?.text, "pong",
+        "An accepted credential must demonstrate a real tool call");
+    }
+    if (response.status !== 401) {
+      failures.push({ contract, expectedStatus: 401, actualStatus: response.status });
+    } else {
+      assert.match(response.headers.get("www-authenticate"), /resource_metadata=/u);
     }
   }
-  const refresh = await formPost("token", {
-    grant_type: "refresh_token", refresh_token: tokens.refresh_token, resource,
-  });
-  assert.equal(refresh.status, 200, "Refresh rotation");
-  const rotated = await refresh.json();
-  assert.ok(rotated.refresh_token !== tokens.refresh_token, "Refresh token must rotate");
-  const revokeAccess = await formPost("revoke", { token: rotated.access_token, token_type_hint: "access_token" });
-  const revokeAccessBody = revokeAccess.status === 200 ? {} : await revokeAccess.json();
-  if (revokeAccess.status !== 200) failures.push({
-    contract: `${opaque ? "Opaque" : "JWT"} access-token revocation`,
-    expectedStatus: 200, actualStatus: revokeAccess.status,
-    error: revokeAccessBody.error,
-    description: revokeAccessBody.error_description,
-  });
-  if (opaque) assert.equal((await tool(rotated.access_token)).status, 401, "Revoked opaque access token immediately denied");
-  // Mint a fresh child before refresh revocation, so the earlier direct-access
-  // revocation cannot make this independent refresh test pass accidentally.
-  const secondRefresh = await formPost("token", {
-    grant_type: "refresh_token", refresh_token: rotated.refresh_token, resource,
-  });
-  assert.equal(secondRefresh.status, 200, "Second rotation must mint a fresh access credential");
-  const current = await secondRefresh.json();
-  assert.equal((await tool(current.access_token)).status, 200, "Current family access starts active");
-  const revokeRefresh = await formPost("revoke", { token: current.refresh_token, token_type_hint: "refresh_token" });
-  assert.equal(revokeRefresh.status, 200, "Refresh token revocation");
-  const afterRevocation = await tool(current.access_token);
-  if (afterRevocation.status !== 401) {
-    if (afterRevocation.status === 200) {
-      assert.equal((await afterRevocation.json()).result?.content?.[0]?.text, "pong", "Revocation failure must demonstrate an actual tool call");
+  async function concurrencyChecks() {
+    // Independent disposable process: retain all provider limits (20 token
+    // requests/minute) rather than raising/disabling them for a longer suite.
+    for (const refreshFirst of [true, false]) {
+      const label = refreshFirst ? "refresh-first launch" : "revoke-first launch";
+      const unrelated = await exchange(await grant());
+      const original = await exchange(await grant());
+      const rotation = await formPost("token", {
+        grant_type: "refresh_token", refresh_token: original.refresh_token, resource,
+      });
+      assert.equal(rotation.status, 200, "Prepare a rotated family before the race");
+      const current = await rotation.json();
+      assert.equal((await tool(original.access_token)).status, 200, "Pre-rotation access starts active");
+      assert.equal((await tool(current.access_token)).status, 200, "Current access starts active");
+      assert.equal((await tool(unrelated.access_token)).status, 200, "Unrelated grant starts active");
+      const foreignRevoke = await formPost("revoke", {
+        client_id: otherClientId, token: current.refresh_token, token_type_hint: "refresh_token",
+      });
+      assert.equal(foreignRevoke.status, 200, "Wrong-client revoke must be non-disclosing");
+      assert.equal((await tool(current.access_token)).status, 200, "Wrong-client revoke must not revoke victim");
+      const foreignRefresh = await formPost("token", {
+        client_id: otherClientId, grant_type: "refresh_token", refresh_token: current.refresh_token, resource,
+      });
+      assert.equal(foreignRefresh.status, 400, "Wrong-client refresh denied, not rate limited");
+      assert.equal((await foreignRefresh.json()).error, "invalid_grant");
+
+      // Real concurrent HTTP requests; launch order is not a deterministic
+      // storage interleaving. No private import or manufactured reuse is used.
+      const rotate = () => formPost("token", {
+        grant_type: "refresh_token", refresh_token: current.refresh_token, resource,
+      });
+      const revoke = () => formPost("revoke", {
+        token: current.refresh_token, token_type_hint: "refresh_token",
+      });
+      const responses = await Promise.all(refreshFirst ? [rotate(), revoke()] : [revoke(), rotate()]);
+      const [refreshResponse, revokeResponse] = refreshFirst ? responses : responses.toReversed();
+      assert.notEqual(revokeResponse.status, 429, "Concurrent revoke must not hit rate limits");
+      assert.notEqual(refreshResponse.status, 429, "Concurrent refresh must not hit rate limits");
+      observations.push({
+        scenario: label, refreshStatus: refreshResponse.status, revokeStatus: revokeResponse.status,
+        descendantIssued: refreshResponse.status === 200,
+      });
+      if (revokeResponse.status !== 200) failures.push({
+        contract: `${label}: concurrent revoke succeeds`,
+        expectedStatus: 200, actualStatus: revokeResponse.status,
+      });
+      if (![200, 400].includes(refreshResponse.status)) failures.push({
+        contract: `${label}: concurrent refresh returns tokens or invalid_grant, never a server error`,
+        expectedStatus: [200, 400], actualStatus: refreshResponse.status,
+      });
+      await expectAccessDenied(original.access_token, `${label}: pre-rotation access denied after revoke`);
+      await expectAccessDenied(current.access_token, `${label}: current access denied after revoke`);
+      if (refreshResponse.status === 200) {
+        const descendant = await refreshResponse.json();
+        assert.equal(typeof descendant.access_token, "string");
+        assert.equal(typeof descendant.refresh_token, "string");
+        await expectAccessDenied(descendant.access_token, `${label}: raced descendant access denied after revoke`);
+        const descendantRefresh = await formPost("token", {
+          grant_type: "refresh_token", refresh_token: descendant.refresh_token, resource,
+        });
+        if (descendantRefresh.status !== 400) failures.push({
+          contract: `${label}: raced descendant refresh denied after revoke`,
+          expectedStatus: 400, actualStatus: descendantRefresh.status,
+        });
+        else assert.equal((await descendantRefresh.json()).error, "invalid_grant");
+      } else if (refreshResponse.status === 400) {
+        assert.equal((await refreshResponse.json()).error, "invalid_grant");
+      }
+      // Before any deliberate ancestor replay: it could mask an explicit
+      // revocation failure by invoking the provider's separate reuse path.
+      const unrelatedAfter = await tool(unrelated.access_token);
+      if (unrelatedAfter.status !== 200) failures.push({
+        contract: `${label}: preserve unrelated same-client grant`,
+        expectedStatus: 200, actualStatus: unrelatedAfter.status,
+      });
+      else assert.equal((await unrelatedAfter.json()).result?.content?.[0]?.text, "pong");
     }
-    failures.push({
-      contract: "Access token rejected after refresh-family revocation",
-      expectedStatus: 401, actualStatus: afterRevocation.status,
+  }
+  if (concurrencyOnly) {
+    await concurrencyChecks();
+  } else {
+    const missing = await tool();
+    assert.equal(missing.status, 401, "Missing bearer must be challenged");
+    assert.match(missing.headers.get("www-authenticate"), /resource_metadata=/u);
+    const invalid = await tool("invalid");
+    if (opaque && invalid.status !== 401) failures.push({
+      contract: "Opaque invalid bearer gets a discovery challenge",
+      expectedStatus: 401, actualStatus: invalid.status,
     });
-  }
-  if (opaque) {
-    for (const denied of await Promise.all(Array.from({ length: 3 }, () => tool(current.access_token)))) {
-      assert.equal(denied.status, 401, "Concurrent calls with a revoked child credential denied");
+    else assert.equal(invalid.status, 401, "Invalid bearer must be challenged");
+    const tokens = await exchange(await grant());
+    if (opaque) assert.ok(!tokens.access_token.includes("."), "Provider must issue opaque access tokens");
+    if (localOpaque) {
+      const internalEndpoint = await jsonPost("/api/auth/probe/active-access-token", { token: "invalid" });
+      assert.equal(internalEndpoint.status, 404, "Server-only active-token capability must never be mounted publicly");
     }
-  }
-  // A refresh family includes credentials issued before rotation, not just the
-  // access token attached to the latest refresh row. Do not let direct access
-  // revocation above mask this independent grant/family check.
-  if (opaque) {
-    const earlierCalls = await Promise.all(Array.from({ length: 3 }, () => tool(tokens.access_token)));
-    for (const earlierAccess of earlierCalls) {
-      if (earlierAccess.status === 200) assert.equal((await earlierAccess.json()).result?.content?.[0]?.text, "pong", "Earlier family access really reaches the tool");
+    const accepted = await tool(tokens.access_token);
+    assert.equal(accepted.status, 200, "Fresh access token must reach SDK v2");
+    const acceptedBody = await accepted.json();
+    assert.equal(acceptedBody.result?.content?.[0]?.text, "pong", "Actual generic MCP tool invocation");
+    if (opaque) {
+      const jwtOnly = await fetchLocal(`${baseURL}/negative/jwt-only`, {
+        method: "POST", headers: { authorization: `Bearer ${tokens.access_token}` },
+      });
+      assert.equal(jwtOnly.status, 401, "JWT-only requireMcpAuth must not accept an opaque token");
     }
-    const unexpected = earlierCalls.find((response) => response.status !== 401);
-    if (unexpected) {
+    for (const [suffix, status] of [["wrong-audience", 401], ["wrong-issuer", 401], ["wrong-scope", 403]]) {
+      const rejected = await fetchLocal(`${baseURL}/negative/${suffix}`, {
+        method: "POST", headers: { authorization: `Bearer ${tokens.access_token}` },
+      });
+      if (opaque && rejected.status !== status) failures.push({
+        contract: `Opaque ${suffix} rejection challenge`,
+        expectedStatus: status, actualStatus: rejected.status,
+      });
+      else {
+        assert.equal(rejected.status, status, `${suffix} denied by maintained verifier`);
+        assert.match(rejected.headers.get("www-authenticate"), /resource_metadata=/u);
+      }
+    }
+    const refresh = await formPost("token", {
+      grant_type: "refresh_token", refresh_token: tokens.refresh_token, resource,
+    });
+    assert.equal(refresh.status, 200, "Refresh rotation");
+    const rotated = await refresh.json();
+    assert.ok(rotated.refresh_token !== tokens.refresh_token, "Refresh token must rotate");
+    const revokeAccess = await formPost("revoke", { token: rotated.access_token, token_type_hint: "access_token" });
+    const revokeAccessBody = revokeAccess.status === 200 ? {} : await revokeAccess.json();
+    if (revokeAccess.status !== 200) failures.push({
+      contract: `${opaque ? "Opaque" : "JWT"} access-token revocation`,
+      expectedStatus: 200, actualStatus: revokeAccess.status,
+      error: revokeAccessBody.error,
+      description: revokeAccessBody.error_description,
+    });
+    if (opaque) assert.equal((await tool(rotated.access_token)).status, 401, "Revoked opaque access token immediately denied");
+    // Mint a fresh child before refresh revocation, so the earlier direct-access
+    // revocation cannot make this independent refresh test pass accidentally.
+    const secondRefresh = await formPost("token", {
+      grant_type: "refresh_token", refresh_token: rotated.refresh_token, resource,
+    });
+    assert.equal(secondRefresh.status, 200, "Second rotation must mint a fresh access credential");
+    const intermediate = await secondRefresh.json();
+    const thirdRefresh = await formPost("token", {
+      grant_type: "refresh_token", refresh_token: intermediate.refresh_token, resource,
+    });
+    assert.equal(thirdRefresh.status, 200, "Third rotation must preserve a live intermediate access credential");
+    const current = await thirdRefresh.json();
+    assert.equal((await tool(intermediate.access_token)).status, 200, "Intermediate family access starts active");
+    assert.equal((await tool(current.access_token)).status, 200, "Current family access starts active");
+    const revokeRefresh = await formPost("revoke", { token: current.refresh_token, token_type_hint: "refresh_token" });
+    assert.equal(revokeRefresh.status, 200, "Refresh token revocation");
+    const afterRevocation = await tool(current.access_token);
+    if (afterRevocation.status !== 401) {
+      if (afterRevocation.status === 200) {
+        assert.equal((await afterRevocation.json()).result?.content?.[0]?.text, "pong", "Revocation failure must demonstrate an actual tool call");
+      }
       failures.push({
-        contract: "Pre-rotation access token rejected immediately after refresh-family revocation",
-        expectedStatus: 401, actualStatus: unexpected.status,
-        acceptedConcurrentToolCalls: earlierCalls.filter((response) => response.status === 200).length,
+        contract: "Access token rejected after refresh-family revocation",
+        expectedStatus: 401, actualStatus: afterRevocation.status,
       });
     }
-  }
-  const revokedRefresh = await formPost("token", {
-    grant_type: "refresh_token", refresh_token: current.refresh_token, resource,
-  });
-  assert.equal(revokedRefresh.status, 400, "Revoked refresh denied, not rate limited");
-  // Separate grant: reuse detection must invalidate a still-live child, not
-  // merely return an error for a family a previous revocation already removed.
-  const reuseTokens = await exchange(await grant());
-  const reuseRotation = await formPost("token", {
-    grant_type: "refresh_token", refresh_token: reuseTokens.refresh_token, resource,
-  });
-  assert.equal(reuseRotation.status, 200, "Independent reuse family rotation");
-  const reuseChild = await reuseRotation.json();
-  assert.equal((await tool(reuseChild.access_token)).status, 200, "Reuse family child starts active");
-  const reuse = await formPost("token", {
-    grant_type: "refresh_token", refresh_token: reuseTokens.refresh_token, resource,
-  });
-  assert.equal(reuse.status, 400, "Rotated refresh reuse denied, not rate limited");
-  const afterReuse = await tool(reuseChild.access_token);
-  if (afterReuse.status !== 401) {
-    if (afterReuse.status === 200) {
-      assert.equal((await afterReuse.json()).result?.content?.[0]?.text, "pong", "Refresh reuse failure must demonstrate an actual tool call");
+    if (opaque) {
+      for (const denied of await Promise.all(Array.from({ length: 3 }, () => tool(current.access_token)))) {
+        assert.equal(denied.status, 401, "Concurrent calls with a revoked child credential denied");
+      }
     }
-    failures.push({
-      contract: "Live child access token rejected after refresh reuse detection",
-      expectedStatus: 401, actualStatus: afterReuse.status,
+    // A refresh family includes credentials issued before rotation, not just the
+    // access token attached to the latest refresh row. Do not let direct access
+    // revocation above mask this independent grant/family check.
+    if (opaque) {
+      const earlierCalls = await Promise.all(Array.from({ length: 3 }, () => tool(tokens.access_token)));
+      for (const earlierAccess of earlierCalls) {
+        if (earlierAccess.status === 200) assert.equal((await earlierAccess.json()).result?.content?.[0]?.text, "pong", "Earlier family access really reaches the tool");
+      }
+      const unexpected = earlierCalls.find((response) => response.status !== 401);
+      if (unexpected) {
+        failures.push({
+          contract: "Pre-rotation access token rejected immediately after refresh-family revocation",
+          expectedStatus: 401, actualStatus: unexpected.status,
+          acceptedConcurrentToolCalls: earlierCalls.filter((response) => response.status === 200).length,
+        });
+      }
+      await expectAccessDenied(intermediate.access_token,
+        "Intermediate pre-rotation access token rejected after refresh-family revocation");
+    }
+    const revokedRefresh = await formPost("token", {
+      grant_type: "refresh_token", refresh_token: current.refresh_token, resource,
     });
-  }
-  const refreshAfterReuse = await formPost("token", {
-    grant_type: "refresh_token", refresh_token: reuseChild.refresh_token, resource,
-  });
-  assert.equal(refreshAfterReuse.status, 400, "Reuse detection invalidates the live refresh child");
-  const badVerifierGrant = await grant();
-  const badVerifier = await formPost("token", {
-    grant_type: "authorization_code", code: badVerifierGrant.code,
-    code_verifier: randomBytes(32).toString("base64url"), redirect_uri: redirectUri, resource,
-  });
-  assert.equal(badVerifier.status, 400, "Wrong PKCE verifier denied");
-  const badRedirectGrant = await grant();
-  const badRedirect = await formPost("token", {
-    grant_type: "authorization_code", code: badRedirectGrant.code,
-    code_verifier: badRedirectGrant.verifier, redirect_uri: `${redirectUri}/wrong`, resource,
-  });
-  assert.equal(badRedirect.status, 400, "Mismatched token redirect denied");
-  const replayGrant = await grant();
-  await exchange(replayGrant);
-  const replay = await formPost("token", {
-    grant_type: "authorization_code", code: replayGrant.code,
-    code_verifier: replayGrant.verifier, redirect_uri: redirectUri, resource,
-  });
-  assert.equal(replay.status, 400, "Consumed authorization code denied");
-  const expiredGrant = await grant();
-  // Move only the disposable provider-owned authorization-code row's expiry
-  // into the past. This is a test fault injection, never an application migration.
-  database.prepare("UPDATE verification SET expiresAt = ? WHERE value LIKE ?")
-    .run(Date.now() - 60_000, '%"type":"authorization_code"%');
-  const expired = await formPost("token", {
-    grant_type: "authorization_code", code: expiredGrant.code,
-    code_verifier: expiredGrant.verifier, redirect_uri: redirectUri, resource,
-  });
-  assert.equal(expired.status, 400, "Expired authorization code denied");
-  if (opaque) {
-    const expiringAccess = await exchange(await grant());
-    // Disposable fault injection. Verification still goes through the provider
-    // APIs and never accepts expired credentials or bypasses the normal flow.
-    database.prepare("UPDATE oauthAccessToken SET expiresAt = ? WHERE clientId = ?")
-      .run(Date.now() - 60_000, clientId);
-    assert.equal((await tool(expiringAccess.access_token)).status, 401, "Expired opaque access token denied");
+    assert.equal(revokedRefresh.status, 400, "Revoked refresh denied, not rate limited");
+    // Separate grant: reuse detection must invalidate a still-live child, not
+    // merely return an error for a family a previous revocation already removed.
+    const reuseTokens = await exchange(await grant());
+    const reuseRotation = await formPost("token", {
+      grant_type: "refresh_token", refresh_token: reuseTokens.refresh_token, resource,
+    });
+    assert.equal(reuseRotation.status, 200, "Independent reuse family rotation");
+    const reuseChild = await reuseRotation.json();
+    assert.equal((await tool(reuseChild.access_token)).status, 200, "Reuse family child starts active");
+    const reuse = await formPost("token", {
+      grant_type: "refresh_token", refresh_token: reuseTokens.refresh_token, resource,
+    });
+    assert.equal(reuse.status, 400, "Rotated refresh reuse denied, not rate limited");
+    const afterReuse = await tool(reuseChild.access_token);
+    if (afterReuse.status !== 401) {
+      if (afterReuse.status === 200) {
+        assert.equal((await afterReuse.json()).result?.content?.[0]?.text, "pong", "Refresh reuse failure must demonstrate an actual tool call");
+      }
+      failures.push({
+        contract: "Live child access token rejected after refresh reuse detection",
+        expectedStatus: 401, actualStatus: afterReuse.status,
+      });
+    }
+    const refreshAfterReuse = await formPost("token", {
+      grant_type: "refresh_token", refresh_token: reuseChild.refresh_token, resource,
+    });
+    assert.equal(refreshAfterReuse.status, 400, "Reuse detection invalidates the live refresh child");
+    const badVerifierGrant = await grant();
+    const badVerifier = await formPost("token", {
+      grant_type: "authorization_code", code: badVerifierGrant.code,
+      code_verifier: randomBytes(32).toString("base64url"), redirect_uri: redirectUri, resource,
+    });
+    assert.equal(badVerifier.status, 400, "Wrong PKCE verifier denied");
+    const badRedirectGrant = await grant();
+    const badRedirect = await formPost("token", {
+      grant_type: "authorization_code", code: badRedirectGrant.code,
+      code_verifier: badRedirectGrant.verifier, redirect_uri: `${redirectUri}/wrong`, resource,
+    });
+    assert.equal(badRedirect.status, 400, "Mismatched token redirect denied");
+    const replayGrant = await grant();
+    await exchange(replayGrant);
+    const replay = await formPost("token", {
+      grant_type: "authorization_code", code: replayGrant.code,
+      code_verifier: replayGrant.verifier, redirect_uri: redirectUri, resource,
+    });
+    assert.equal(replay.status, 400, "Consumed authorization code denied");
+    const expiredGrant = await grant();
+    // Move only the disposable provider-owned authorization-code row's expiry
+    // into the past. This is a test fault injection, never an application migration.
+    database.prepare("UPDATE verification SET expiresAt = ? WHERE value LIKE ?")
+      .run(Date.now() - 60_000, '%"type":"authorization_code"%');
+    const expired = await formPost("token", {
+      grant_type: "authorization_code", code: expiredGrant.code,
+      code_verifier: expiredGrant.verifier, redirect_uri: redirectUri, resource,
+    });
+    assert.equal(expired.status, 400, "Expired authorization code denied");
+    if (opaque) {
+      const expiringAccess = await exchange(await grant());
+      // Disposable fault injection. Verification still goes through the provider
+      // APIs and never accepts expired credentials or bypasses the normal flow.
+      database.prepare("UPDATE oauthAccessToken SET expiresAt = ? WHERE clientId = ?")
+        .run(Date.now() - 60_000, clientId);
+      assert.equal((await tool(expiringAccess.access_token)).status, 401, "Expired opaque access token denied");
+      // Expiry injection is ONLY into disposable test rows. Neither revocation
+      // nor validation uses database writes as an implementation workaround.
+      database.prepare("UPDATE oauthRefreshToken SET expiresAt = ? WHERE clientId = ?")
+        .run(Date.now() - 60_000, clientId);
+      const expiredRefresh = await formPost("token", {
+        grant_type: "refresh_token", refresh_token: expiringAccess.refresh_token, resource,
+      });
+      assert.equal(expiredRefresh.status, 400, "Expired refresh token denied, not rate limited");
+      assert.equal((await expiredRefresh.json()).error, "invalid_grant");
+    }
   }
   process.stdout.write(`${JSON.stringify({
-    task: "AUTH-003", status: failures.length ? "BLOCKED" : "PASS", node: process.version,
+    task: "AUTH-003", suite: concurrencyOnly ? "concurrency" : "lifecycle", status: failures.length ? "BLOCKED" : "PASS", node: process.version,
     tokenFormat: opaque ? "opaque" : "jwt",
     verifier: localOpaque ? "getOAuthProviderApi.requireActiveAccessToken + resource policy"
       : opaque ? "createMcpProtectedRequestHandler + forced provider introspection" : "requireMcpAuth",
     ...versions,
     isolated: true, productionIntegrated: false, cimdTransport: "fixture, no remote network",
-    exercised: [
+    exercised: concurrencyOnly ? [
+      "wrong-client refresh/revoke ownership", "unrelated same-client grant isolation",
+      "concurrent refresh versus revoke (both launch orders)",
+      "earlier access denial after concurrent revoke",
+      "raced descendant access and refresh denial when issued",
+    ] : [
       "temporary SQLite + provider migrations", "password login",
       "RFC 9728 and authorization-server discovery", "CIMD profile, DCR disabled",
       "signed consent query/state tampering denied", "S256 code exchange",
@@ -564,8 +684,13 @@ try {
       "missing/invalid bearer challenge", "generic SDK v2 tool invocation",
       "wrong issuer/audience/scope denied",
       "refresh rotation", "revoked refresh denied", "rotated refresh reuse denied",
-      ...(opaque ? ["JWT-only middleware rejects opaque tokens", "immediate opaque access revocation", "concurrent revoked-child calls denied", "opaque access expiry denied"] : []),
+      ...(opaque ? [
+        "JWT-only middleware rejects opaque tokens", "immediate opaque access revocation",
+        "concurrent revoked-child calls denied", "opaque access expiry denied",
+        "expired refresh denied",
+      ] : []),
     ],
+    observations,
     failures,
   }, null, 2)}\n`);
   if (failures.length) process.exitCode = 1;

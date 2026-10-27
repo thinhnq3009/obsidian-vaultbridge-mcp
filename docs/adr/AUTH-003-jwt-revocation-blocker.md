@@ -2,6 +2,11 @@
 
 **Status: BLOCKED / NOT IMPLEMENTED IN PRODUCTION — October 27, 2026.**
 
+> **Latest investigation:** Supported APIs, stable 1.7.14 and beta
+> 1.8.0-beta.3 do not resolve the contract. See
+> [source/release research and the upstream review proposal](AUTH-003-provider-family-revocation-research.md)
+> and [the new executable evidence](#supported-api-investigation-and-concurrent-revocation).
+
 > **Continuation:** The owner authorized opaque-token investigation. Opaque
 > issuance and immediate individual revocation now work with supported
 > verification APIs, but whole-refresh-family revocation still fails. See
@@ -330,3 +335,122 @@ production MCP budget requested by AUTH-003. The new contract CI gate must be
 reported separately from baseline CI: it is expected to fail until a maintained
 provider implementation satisfies whole-family revocation. No production
 readiness, browser/CIMD-network interoperability or load benchmark is claimed.
+
+## Supported-API investigation and concurrent revocation
+
+**October 27, 2026 — still BLOCKED.** This supersedes the earlier
+request to choose a token-format direction. Opaque investigation is authorized;
+no supported, atomically grant-scoped revocation operation was found. See the
+[primary-source research and proposed upstream contract](AUTH-003-provider-family-revocation-research.md).
+
+Fresh registry and official release checks identify **1.7.14** as latest stable
+and **1.8.0-beta.3** as latest beta. Neither resolves the gate in an isolated
+aligned install. No root or committed spike dependency version was changed.
+`deleteOAuthConsent` deletes consent metadata, not already-issued credentials;
+client-wide disable/delete or owner logout is broader than a specific grant.
+The documented provider capability API does not expose family revocation.
+The internal `(client,user)` invalidator explicitly documents non-atomic
+invalidation and rotation limitations; importing it is not a supported fix.
+
+### Strengthened probes (existing assertions retained)
+
+```sh
+npm ci --prefix scripts/spikes/better-auth-sdk-v2
+npm --prefix scripts/spikes/better-auth-sdk-v2 run probe:opaque-local
+npm --prefix scripts/spikes/better-auth-sdk-v2 run probe:concurrency
+```
+
+Run both probes; a failed lifecycle probe does not replace the concurrency
+probe. Exit 1 remains a failed security/behavior contract; exit 2 is
+inconclusive setup, never PASS. Default JWT/HTTP/local modes retain all their
+previous security assertions. New coverage:
+
+- A third rotation leaves **two** independently live earlier access
+  credentials: original and intermediate. Neither is the access credential
+  revoked by the individual-access test. After current-refresh revocation,
+  original access still permits **three concurrent `pong` calls**, and the
+  intermediate access separately permits another call. Both must be 401.
+- Expired refresh is rejected with `invalid_grant`, in addition to expired
+  access/code checks. Expiry fault injection touches disposable rows only;
+  no database manipulation implements revocation or token validation.
+- Separate `probe:concurrency` uses fresh disposable storage/listener/provider
+  so all existing limits, including 20 token requests/minute, remain enabled
+  unchanged. It tests wrong-client revoke/refresh, two simultaneous HTTP
+  launch orders, earlier/current access, any successfully issued descendant's
+  access and refresh, and preservation of a separate same-user/client grant.
+- Checks run only after both concurrent responses. A 500 is recorded as a
+  failing contract, not confused with a setup/expiry/reuse success. Returned
+  descendants are checked when issued; observed runs issued none. The probe
+  records this explicitly and makes no successful-descendant or deterministic
+  multi-worker scheduling claim.
+- The six-cell CI gate now also runs the concurrency step after a lifecycle
+  failure (`if: ${{ !cancelled() }}`). Both steps retain nonzero failure codes;
+  no continue-on-error, assertion inversion, limiter change or suppression.
+
+### Final local diagnostic matrix
+
+| Provider set | Linux Node | Opaque public API lifecycle | Concurrent refresh/revoke |
+| --- | --- | --- | --- |
+| Pinned 1.7.13 | 22.23.4 and 24.22.1 | exit 1, **2** earlier-access failures | exit 1, **4** contract failures |
+| Stable 1.7.14, temporary install | 22.23.4 and 24.22.1 | same 2 failures / exit 1 | same 4 failures / exit 1 |
+| Beta 1.8.0-beta.3, temporary install | 24.22.1 | same 2 failures / exit 1 | **3** failures / exit 1 |
+
+These **10 final runs** all reach their result reports; none exits 2.
+On 1.7.13/1.7.14, refresh-first launch yields **refresh 500 + revoke 400**,
+with `FOREIGN KEY constraint failed`; revoke-first yields **refresh 400 +
+revoke 200**. Both launch orders invalidate a separately verified unrelated
+grant (**401**, expected 200). Beta yields refresh-first **500/200**, not a
+fix; unrelated-grant failures remain. Launch order is an observed scheduler
+sample, not a guarantee of every interleaving. Baseline JWT/HTTP modes remain
+blocked and AUTH-001 smoke still passes. No rate-limit response was accepted
+as revocation evidence. One initial beta installation with the old stable
+lock produced ERESOLVE; a fresh aligned beta manifest installed normally
+without force or peer-check bypass, and only that successful install is
+counted in the runtime matrix.
+
+Fresh full regressions on **both Linux Node 22.23.4 and 24.22.1**:
+
+- `npm run lint`, `npm run build`: PASS.
+- `npm test -- --maxWorkers=2`: PASS, **28 suites; 547 passed, one
+  pre-existing Windows-only skipped (548 total)**. The new probes do not skip
+  security assertions; baseline's platform-specific skip is unchanged.
+- `npm run smoke:package`: PASS for both CLI aliases, package allowlist and
+  packaged STDIO tool round trips.
+- Existing AUTH-001 smoke, probe syntax and `git diff --check`: PASS.
+- `npm pack --dry-run`: PASS (Node 24).
+- Root full/production-only and pinned spike `npm audit --audit-level=high`:
+  zero vulnerabilities (Node 24, point-in-time registry audit).
+
+Historical head `06422fb` CI is now fully resolved: baseline CI
+**40532345543 SUCCESS**, Security analysis **40532345411 SUCCESS**, and all
+**six** revocation jobs in **40532345400 FAILURE** at the lifecycle step.
+This supersedes the earlier queued macOS Node 24 snapshot, not final-head CI.
+Updated-head run evidence belongs in PR #59 and the Obsidian note; never
+inherit a prior head's PASS. Production integration and acceptance remain
+blocked regardless of green baseline checks.
+
+### Concrete recommendation / review gate
+
+Keep Better Auth. Request a maintained **public grant-family revocation
+capability** with durable grant identity, client ownership validation,
+retained replay evidence and cross-worker linearizability against issuance/
+rotation. A transaction or an equivalently atomic grant tombstone must ensure
+no previously issued or concurrently minted credential is active after
+successful revoke, without deleting unrelated grants. Include barrier-driven
+adapter/multi-connection races, restart/crash tests and migration/backfill in
+upstream review. The research note specifies the review checklist and exact
+immutable source references.
+
+No application-side table rewrite, synthetic reuse, global logout, expiry
+waiting, private helper import or unreviewed fork was adopted. If an upstream
+patch is required, keep it isolated and **request security/maintainer/owner
+review before adoption**; this branch contains only probes/docs/CI, not that
+patch. No upstream issue was submitted on the owner's behalf.
+
+**Production path stopped as requested.** `/mcp` OAuth integration, production
+UI/network/auth-mode/rate-budget changes remain unimplemented. STDIO, legacy
+token, owner setup and vault security are unchanged. GitNexus still returns
+internal errors; ChatGPT workspace review remains unconfigured. Direct source
+inspection and executable validation are not independent security review.
+PR #59 remains draft, #47 open; no AUTH-004, merge or publish. Rollback only
+removes diagnostics/docs/CI and requires no production migration.

@@ -7,6 +7,7 @@
     "probe:revocation": "node lifecycle-revocation.mjs",
     "probe:opaque": "node lifecycle-revocation.mjs --opaque",
     "probe:opaque-local": "node lifecycle-revocation.mjs --opaque-local",
+    "probe:concurrency": "node lifecycle-revocation.mjs --opaque-local --concurrency",
     "codemod:dry-run": "mcp-codemod v1-to-v2 --dry-run ../../.."
   },
   "engines": {
