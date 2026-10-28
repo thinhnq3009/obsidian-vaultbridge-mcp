@@ -91,6 +91,54 @@ explicit owner action. This mitigation does not alter provider tables or solve
 
 ## Validation and outstanding gates
 
+### Local opt-in quick start
+
+Use a supported Node release and a **disposable test vault** first. Keep this
+separate from any running instance. The same private auth directory must be
+used for both commands:
+
+```sh
+npm ci
+npm run build
+
+# First enroll the owner via the printed loopback UI and setup-token file.
+# --stdio prevents unrelated HTTP deployment settings from affecting setup.
+npm start -- owner-auth --stdio --vault /absolute/test-vault \
+  --auth-directory /absolute/private/auth-data --owner-port 39146
+
+# Stop owner-auth before starting runtime (single-process SQLite lock).
+# In a separate invocation after setup:
+MCP_AUTH_MODE=oauth MCP_OAUTH_ENABLED=true \
+MCP_OAUTH_ISSUER=http://127.0.0.1:39145/api/auth \
+MCP_ALLOWED_HOSTS=127.0.0.1 MCP_VAULT_ID=local-test-vault \
+MCP_AUTH_DIRECTORY=/absolute/private/auth-data \
+npm start -- --http --host 127.0.0.1 --port 39145 \
+  --vault /absolute/test-vault
+```
+
+Unset `MCP_AUTH_TOKEN` for OAuth: modes cannot be combined. Auth data must be
+outside the vault and outside any other vault. Do not paste the setup token,
+cookie or access/refresh tokens into shell history, issues or logs.
+
+Configure a **CIMD-capable OAuth client** with resource
+`http://127.0.0.1:39145/mcp` and scopes `vault:read offline_access` (add
+`vault:write` only when granting exact write actions through the owner API).
+The client must provide its public HTTPS metadata document with the exact
+callback URI and use Authorization Code + PKCE S256; DCR remains disabled.
+Missing bearer credentials to `/mcp` return the discovery challenge. Follow
+the client's browser authorization, log in on the separate owner UI, enter an
+explicit subtree such as `Notes`, and approve. The UI preset permits read-only
+operations in that subtree, not root traversal or writes. Access requires both
+the token scopes and this local grant. Revoke from the owner account page.
+
+For non-loopback deployments, use an exact canonical HTTPS issuer, explicit
+Host allowlist and trusted TLS termination (`MCP_HTTP_TLS_PROXY=true`). Keep
+the owner listener private and use a browser on the server machine. These
+examples do not bypass #60 risk review or prove a particular external client's
+interoperability.
+
+### Executable evidence
+
 Disposable live tests exercise owner login → signed consent → S256 → opaque
 token → actual MCP client/tool, sibling/write/privileged denials, parallel
 clients with distinct subtrees, scoped search/cursor replay, token/grant scope
@@ -99,6 +147,15 @@ revocation at final commit, expiry/foreign-server rejection, management CSRF
 and sanitized logging. Only external CIMD IO is replaced by deterministic
 fixtures. Phase A's comprehensive malicious-input/backend/tool tests remain
 part of the full suite.
+
+The served UI is also exercised with JSDOM DOM events and real loopback HTTP:
+login form → session cookie → signed consent preview → explicit subtree grant
+→ approve → provider callback/code → token exchange → actual MCP read, sibling
+denial and write denial. Only document navigation is simulated because JSDOM
+does not implement it. Separate raw-HTTP regressions send real browser Fetch
+Metadata headers, proving cross-site top-level login/consent navigation works
+while iframe/API/mutation CSRF protections remain enforced. This is not a real
+Chrome/ChatGPT or remote deployment test.
 
 The CI matrix is explicitly enabled for this Phase B PR into develop:
 Linux/macOS/Windows, Node 22.23.4 and 24.22.1, plus dependency audits. Local

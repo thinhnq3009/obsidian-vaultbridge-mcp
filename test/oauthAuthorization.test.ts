@@ -4,9 +4,10 @@ import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { JSDOM, VirtualConsole } from "jsdom";
 
 import { pathActions } from "../src/auth/grants.js";
-import { clientA, clientB, oauthHarness } from "./oauthHelpers.js";
+import { clientA, clientB, oauthHarness, password } from "./oauthHelpers.js";
 import { createVerifiedAuthContext } from "../src/auth/requestContext.js";
 import { principalVerifier } from "../src/auth/oauth.js";
 
@@ -76,6 +77,61 @@ async function connect(h: Harness, token: string) {
 }
 
 describe("AUTH-004 live verified OAuth → SQLite grant → request backend → MCP", () => {
+  it("drives the served owner login and consent UI through real HTTP to a usable scoped MCP token", async () => {
+    const h = await setup();
+    const pending = await h.consent();
+    const consentPage = new URL(`/consent?${pending.query}`, h.ownerOrigin);
+    const html = await (await fetch(consentPage)).text();
+    const script = await (await fetch(`${h.ownerOrigin}/owner.js`)).text();
+    const browserErrors: string[] = [];
+    const console = new VirtualConsole();
+    console.on("jsdomError", (error: Error) => {
+      // JSDOM cannot change documents. Assert the actual provider callback
+      // separately; all DOM events, JS and HTTP below remain real.
+      if (!error.message.includes("Not implemented: navigation")) browserErrors.push(error.message);
+    });
+    const dom = new JSDOM(html, { url: consentPage.href, runScripts: "outside-only", virtualConsole: console });
+    let cookie = "";
+    let callback: URL | undefined;
+    Object.assign(dom.window, {
+      fetch: async (input: string, init?: RequestInit) => {
+        const url = new URL(input, h.ownerOrigin);
+        if (url.origin !== h.ownerOrigin) throw new Error("UI fetch escaped the owner origin");
+        const headers = new Headers(init?.headers);
+        if (cookie) headers.set("cookie", cookie);
+        if (init?.method === "POST") headers.set("origin", h.ownerOrigin);
+        const response = await fetch(url, { ...init, headers, redirect: "manual" });
+        const cookies = response.headers.getSetCookie();
+        if (cookies.length) cookie = cookies.map((value) => value.split(";")[0]).join("; ");
+        if (url.pathname === "/oauth/consent" && response.ok) {
+          callback = new URL((await response.clone().json() as { url: string }).url);
+        }
+        return response;
+      },
+    });
+    const document = dom.window.document;
+    try {
+      dom.window.eval(script);
+      await vi.waitFor(() => expect(document.getElementById("login")!.hidden).toBe(false));
+      const form = document.getElementById("login-form") as HTMLFormElement;
+      (form.elements.namedItem("email") as HTMLInputElement).value = "owner@example.test";
+      (form.elements.namedItem("password") as HTMLInputElement).value = password;
+      form.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
+      await vi.waitFor(() => expect(document.getElementById("oauth")!.hidden).toBe(false), { timeout: 10000 });
+      expect(document.getElementById("oauth-details")!.textContent).toContain(clientA);
+      (document.getElementById("grant-path") as HTMLInputElement).value = "Notes";
+      document.getElementById("oauth-accept")!.click();
+      await vi.waitFor(() => expect(callback?.searchParams.get("code")).toBeTruthy(), { timeout: 10000 });
+      expect(callback!.searchParams.get("state")).toBe(pending.state);
+      expect(callback!.searchParams.get("iss")).toBe(`${h.origin}/api/auth`);
+      const tokens = await h.exchange({ code: callback!.searchParams.get("code")!, verifier: pending.verifier });
+      const client = await connect(h, tokens.access_token);
+      expect((await client.callTool({ name: "obsidian_read_note", arguments: { path: "Notes/A.md" } })).isError).not.toBe(true);
+      expect((await client.callTool({ name: "obsidian_read_note", arguments: { path: "Secret/A.md" } })).isError).toBe(true);
+      expect((await client.callTool({ name: "obsidian_write_note", arguments: { path: "Notes/Denied.md", content: "denied" } })).isError).toBe(true);
+      expect(browserErrors).toEqual([]);
+    } finally { dom.window.close(); }
+  });
   it.each([
     { label: "issuer", change: { iss: "https://foreign.example/api/auth" } },
     { label: "audience", change: { aud: "https://foreign.example/mcp" } },
