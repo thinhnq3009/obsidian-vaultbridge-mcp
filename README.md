@@ -367,6 +367,16 @@ active responses to 32, connections to 128 and requests/socket to 100. Header,
 body and keep-alive timeouts are 10/30/5 seconds; SSE response streams have no
 fixed duration. Use separate instances for clients needing larger shared budgets.
 
+## Request-scoped authorization foundation (AUTH-004 Phase A, unreleased)
+
+The internal Phase A authorization seam supports immutable test-trusted contexts,
+explicit principal/client/vault grants, backend-operation guards and isolated
+search projections/cursors. **It does not enable production OAuth**, change the
+HTTP authentication modes, or make an owner login cookie an MCP credential.
+See [Phase A contracts, security limits and rollback](docs/AUTH-004-phase-a.md).
+Verified OAuth request binding and grant/consent UI await AUTH-003/Phase B;
+upstream Better Auth family-revocation issue #60 remains unresolved.
+
 ## Local owner login (AUTH-002, unreleased)
 
 Owner identity is an **opt-in, separate loopback service**, not yet an MCP OAuth
