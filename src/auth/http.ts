@@ -29,8 +29,15 @@ export async function startOwnerServer(options: { directory: string; vaultPath: 
       "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY",
     });
     if (!owner) { response.sendStatus(503); return; }
+    // The public provider must be able to navigate a browser to the static
+    // owner login/consent shell. Never allow cross-site fetches, iframe loads,
+    // API reads, mutations or arbitrary owner pages through this exception.
+    const oauthNavigation = request.method === "GET"
+      && ["/login", "/consent"].includes(request.path)
+      && request.headers["sec-fetch-mode"] === "navigate"
+      && request.headers["sec-fetch-dest"] === "document";
     if (!isOwnerRequestAllowed(request.socket.remoteAddress, request.headers.host, request.headers.origin, origin)
-      || (request.headers["sec-fetch-site"] && !["same-origin", "none"].includes(String(request.headers["sec-fetch-site"])))) {
+      || (request.headers["sec-fetch-site"] && !["same-origin", "none"].includes(String(request.headers["sec-fetch-site"])) && !oauthNavigation)) {
       response.sendStatus(403); return;
     }
     if (request.headers["content-encoding"] && request.headers["content-encoding"] !== "identity") { response.sendStatus(415); return; }
