@@ -14,6 +14,9 @@ are startup errors, never fallback credentials.
 
 1. Stop the MCP process. Run `owner-auth --vault /absolute/disposable-vault`
    to enroll the owner using the existing protected setup-token workflow.
+   If runtime uses a custom `MCP_AUTH_DIRECTORY`, use that same environment
+   variable or `--auth-directory /absolute/private/app-data` during setup and
+   recovery; CLI takes precedence. Never bootstrap a different database.
 2. Stop the setup listener before starting experimental OAuth: the database is
    single-process locked. Do not start a second owner-auth process.
 3. Set `MCP_AUTH_MODE=oauth`, `MCP_OAUTH_ENABLED=true`,
@@ -32,6 +35,11 @@ No signup, password login, owner session, grant management, consent approval,
 introspection or server-only verification endpoint is exposed on the public
 listener. Public routes are discovery, authorize, token and revoke only.
 Owner POSTs retain exact Origin, custom CSRF header, JSON, peer and Host checks.
+Cross-site browser **top-level document navigation** may open only the static
+`/login` and `/consent` shells. Cross-site API fetches, iframes, other owner
+pages and all mutations are still denied. Loading the shell does not approve
+consent: its API calls must be same-origin, session-authenticated and use the
+provider-signed query. CSP frame denial and no-referrer remain intact.
 OAuth consent uses the provider-signed query, verifies its expiry/signature
 before preview, and never treats a cookie as an MCP bearer.
 

@@ -32,7 +32,8 @@ export async function runOwnerCommand(argv: string[]): Promise<void> {
   const config = loadConfig(env, argv);
   if (!config.vaultPath) throw new Error("Owner auth requires --vault to validate out-of-vault storage");
   const options = ownerOptions(env, argv);
-  const service = await startOwnerServer({ ...options, vaultPath: config.vaultPath, directory: authDataDirectory(process.platform, env) });
+  const service = await startOwnerServer({ ...options, vaultPath: config.vaultPath,
+    directory: config.mcpAuthDirectory ?? authDataDirectory(process.platform, env) });
   process.stderr.write(`[vaultbridge] Local owner UI: ${service.origin}/login\n`);
   if (service.tokenPath) process.stderr.write(`[vaultbridge] One-time ${options.recover ? "recovery" : "setup"} token file: ${service.tokenPath} (expires in 10 minutes; do not share)\n`);
   let closing = false;
