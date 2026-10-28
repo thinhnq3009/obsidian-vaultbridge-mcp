@@ -1,3 +1,4 @@
+
 name: CI
 
 on:
@@ -9,6 +10,7 @@ permissions:
 
 jobs:
   test:
+    if: github.ref == 'refs/heads/main' || (github.base_ref == 'main' && github.head_ref == 'develop')
     strategy:
       fail-fast: false
       matrix:
@@ -34,6 +36,7 @@ jobs:
       - run: npm run smoke:package
 
   dependencies:
+    if: github.ref == 'refs/heads/main' || (github.base_ref == 'main' && github.head_ref == 'develop')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
