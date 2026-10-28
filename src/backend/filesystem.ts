@@ -8,6 +8,9 @@ import path from "node:path";
 
 import lockfile from "proper-lockfile";
 
+import { RequestAccessPolicy } from "../auth/authorization.js";
+import type { OperationAuthorization } from "../auth/authorization.js";
+import { authorizationDenied } from "../auth/requestContext.js";
 import type { AppConfig, NoteJsonMetadata, NoteReadResult, PatchOperation, VaultEntry } from "../types.js";
 import { normalizeVaultPathInput, VaultError } from "../types.js";
 import { VaultAccessPolicy } from "./accessPolicy.js";
@@ -21,12 +24,34 @@ export class FilesystemVaultBackend implements VaultBackend {
   public readonly capabilities: BackendCapabilities = { activeFile: false, openFile: false, searchIndex: true, filesystem: true };
   private vaultRoot = "";
   private vaultRealPath = "";
+  private cacheRealPath = "";
   private searchService: VaultSearchService | undefined;
   private accessPolicy!: VaultAccessPolicy;
 
   public constructor(private readonly config: AppConfig) {
     if (!config.vaultPath) throw new VaultError("VAULT_PATH is required for filesystem backend.", { code: "INVALID_PATH" });
     this.vaultRoot = path.resolve(config.vaultPath);
+  }
+
+  /** Internal Phase A seam: short-lived operation view, never initialize/close it. */
+  public withAuthorization(authorization: OperationAuthorization): FilesystemVaultBackend {
+    if (!this.vaultRealPath || !this.cacheRealPath || !this.searchService
+      || pathsOverlap(this.vaultRealPath, this.cacheRealPath)) throw authorizationDenied();
+    const scoped = new FilesystemVaultBackend(this.config);
+    scoped.vaultRealPath = this.vaultRealPath;
+    scoped.cacheRealPath = this.cacheRealPath;
+    scoped.searchService = this.searchService;
+    scoped.accessPolicy = new RequestAccessPolicy(this.vaultRealPath, this.accessPolicy, authorization);
+    return scoped;
+  }
+
+  private async revalidateAuthorization(): Promise<void> {
+    if (this.accessPolicy instanceof RequestAccessPolicy) await this.accessPolicy.revalidate();
+  }
+
+  public async preflightWriteNotes(paths: readonly string[]): Promise<void> {
+    for (const input of paths) await this.accessPolicy.resolve(input, "write", false);
+    await this.revalidateAuthorization();
   }
 
   public async initialize(): Promise<void> {
@@ -43,6 +68,7 @@ export class FilesystemVaultBackend implements VaultBackend {
     const vaultCacheDir = path.join(this.config.cacheDir, createHash("sha256").update(this.vaultRealPath).digest("hex").slice(0, 16));
     this.searchService = new VaultSearchService(this.vaultRealPath, vaultCacheDir, this.config.indexMode, this.config.watchMode, this.config.maxFileSizeBytes, this.accessPolicy);
     await this.searchService.initialize();
+    this.cacheRealPath = await fs.realpath(this.config.cacheDir);
   }
 
   public async close(): Promise<void> {
@@ -84,7 +110,7 @@ export class FilesystemVaultBackend implements VaultBackend {
     const resolved = await this.accessPolicy.resolve(input, "read", true);
     const entries = await fs.readdir(resolved.absolute, { withFileTypes: true });
     if (entries.length > this.config.maxTreeEntries) throw new VaultError("Directory entry limit exceeded.", { code: "FILE_TOO_LARGE" });
-    return {
+    const result = {
       root: resolved.relative,
       entries: (await Promise.all(entries.map(async (entry) => {
         const relative = joinVaultPath(resolved.relative, entry.name);
@@ -99,21 +125,25 @@ export class FilesystemVaultBackend implements VaultBackend {
         return [{ path: relative, name: entry.name, isFolder: entry.isDirectory() }];
       }))).flat(),
     };
+    await this.revalidateAuthorization();
+    return result;
   }
 
   public async statPath(input: string): Promise<PathStat> {
     try {
       const resolved = await this.accessPolicy.resolve(input, "read", true);
       const stat = await fs.stat(resolved.absolute);
-      return {
+      const result = {
         path: resolved.relative,
         exists: true,
-        kind: stat.isDirectory() ? "folder" : "file",
+        kind: stat.isDirectory() ? "folder" as const : "file" as const,
         size: stat.isFile() ? stat.size : null,
         ctime: stat.ctimeMs,
         mtime: stat.mtimeMs,
         revision: stat.isFile() ? await revisionForFile(resolved.absolute, this.config.maxFileSizeBytes) : null,
       };
+      await this.revalidateAuthorization();
+      return result;
     } catch (error) {
       if (error instanceof VaultError && error.code === "NOT_FOUND") return { path: normalizeVaultPathInput(input), exists: false, kind: "missing", size: null, ctime: null, mtime: null, revision: null };
       throw error;
@@ -123,6 +153,7 @@ export class FilesystemVaultBackend implements VaultBackend {
   public async readNote(input: string): Promise<NoteReadResult> {
     const resolved = await this.accessPolicy.resolve(input, "read", true);
     const existing = await readExisting(resolved.absolute, this.config.maxFileSizeBytes);
+    await this.revalidateAuthorization();
     if (!existing) throw new VaultError(`Path does not exist: ${resolved.relative}`, { code: "NOT_FOUND" });
     return {
       path: resolved.relative,
@@ -151,7 +182,7 @@ export class FilesystemVaultBackend implements VaultBackend {
       }
       const next = this.prepareWrite(resolved.relative, content, existing?.content);
       if (!existing || next !== existing.content) {
-        await atomicWrite(resolved.absolute, next, existing?.mode);
+        await atomicWrite(resolved.absolute, next, existing?.mode, () => this.revalidateAuthorization());
         await this.synchronizeCommitted([resolved.absolute]);
       }
       return { path: resolved.relative, message: existing ? "File replaced successfully." : "File created successfully.", revision: revisionForContent(next) };
@@ -166,6 +197,7 @@ export class FilesystemVaultBackend implements VaultBackend {
     const resolved = await this.accessPolicy.resolve(input, "write", false);
     return this.withPathLock(resolved.relative, async () => {
       try {
+        await this.revalidateAuthorization();
         const created = await fs.mkdir(resolved.absolute, { recursive: true });
         return { path: resolved.relative, created: created !== undefined };
       } catch (error) {
@@ -183,10 +215,12 @@ export class FilesystemVaultBackend implements VaultBackend {
       if (stat.isFile()) {
         const revision = await revisionForFile(resolved.absolute, this.config.maxFileSizeBytes);
         requireRevision(options.expectedRevision, revision);
+        await this.revalidateAuthorization();
         await fs.unlink(resolved.absolute);
       } else {
         if (!options.recursive) throw new VaultError("Folder deletion requires recursive=true.", { code: "ACCESS_DENIED" });
         await this.assertWritableTree(resolved.absolute);
+        await this.revalidateAuthorization();
         await fs.rm(resolved.absolute, { recursive: true, force: false });
       }
       await this.synchronizeCommitted([resolved.absolute, canonical], stat.isDirectory());
@@ -207,10 +241,12 @@ export class FilesystemVaultBackend implements VaultBackend {
         requireRevision(options.expectedDestinationRevision, await revisionForFile(destination.absolute, this.config.maxFileSizeBytes));
       }
       if (sourceStat.isDirectory()) await this.assertWritableTree(source.absolute);
+      await this.revalidateAuthorization();
       await fs.mkdir(path.dirname(destination.absolute), { recursive: true });
       const movedFiles = sourceStat.isDirectory() ? await countFiles(source.absolute, this.config.maxTreeEntries) : 1;
       if (source.absolute !== destination.absolute) {
         const canonicalSource = await fs.realpath(source.absolute);
+        await this.revalidateAuthorization();
         await fs.rename(source.absolute, destination.absolute);
         await this.synchronizeCommitted([source.absolute, canonicalSource, destination.absolute], sourceStat.isDirectory());
       }
@@ -221,7 +257,8 @@ export class FilesystemVaultBackend implements VaultBackend {
   private async assertWritableTree(directory: string): Promise<void> {
     for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
       const absolute = path.join(directory, entry.name);
-      await this.accessPolicy.resolve(path.relative(this.vaultRealPath, absolute), "write", true, true);
+      const relative = path.relative(this.vaultRealPath, absolute).split(path.sep).join("/");
+      await this.accessPolicy.resolve(relative, "write", true, true);
       if (entry.isDirectory()) await this.assertWritableTree(absolute);
     }
   }
@@ -230,6 +267,7 @@ export class FilesystemVaultBackend implements VaultBackend {
     const note = await this.readNote(input);
     const metadata = parseMetadata(note.content);
     const stat = await fs.stat((await this.accessPolicy.resolve(input, "read", true)).absolute);
+    await this.revalidateAuthorization();
     return { path: note.path ?? normalizeVaultPathInput(input), ...metadata, stat: { ctime: stat.ctimeMs, mtime: stat.mtimeMs, size: stat.size }, ...(note.revision ? { revision: note.revision } : {}) };
   }
 
@@ -277,7 +315,16 @@ export class FilesystemVaultBackend implements VaultBackend {
   }
 
   public async search(query: SearchQuery): Promise<SearchResponse> {
-    return this.searchService!.search({ ...query, limit: Math.min(query.limit, this.config.maxSearchResults) });
+    const policy = this.accessPolicy;
+    const authorization = policy instanceof RequestAccessPolicy ? policy.authorization : undefined;
+    const fingerprint = authorization?.fingerprint();
+    return this.searchService!.search({ ...query, limit: Math.min(query.limit, this.config.maxSearchResults) }, authorization ? {
+      fingerprint: fingerprint!,
+      allowsPath: (absolute) => policy.allowsSearchPath(absolute),
+      assertActive: () => {
+        if (authorization.fingerprint() !== fingerprint) throw authorizationDenied();
+      },
+    } : undefined);
   }
 
   public rebuildSearchIndex() {
@@ -292,7 +339,7 @@ export class FilesystemVaultBackend implements VaultBackend {
       requireRevision(expectedRevision, existing.revision);
       const next = this.prepareWrite(resolved.relative, transform(existing.content), existing.content);
       if (next !== existing.content) {
-        await atomicWrite(resolved.absolute, next, existing.mode);
+        await atomicWrite(resolved.absolute, next, existing.mode, () => this.revalidateAuthorization());
         await this.synchronizeCommitted([resolved.absolute]);
       }
       return { path: resolved.relative, message, revision: revisionForContent(next) };
@@ -328,6 +375,7 @@ export class FilesystemVaultBackend implements VaultBackend {
     // need not exist. Avoid creating or following a predictable sentinel file.
     const release = await lockfile.lock(target, { retries: { retries: 20, minTimeout: 25, maxTimeout: 250 }, stale: 15_000, update: 5_000, realpath: false });
     try {
+      await this.revalidateAuthorization();
       return await callback();
     } finally {
       await release();
@@ -335,12 +383,21 @@ export class FilesystemVaultBackend implements VaultBackend {
   }
 }
 
+function pathsOverlap(left: string, right: string): boolean {
+  const contains = (parent: string, child: string) => {
+    const relative = path.relative(parent, child);
+    return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+  };
+  return contains(left, right) || contains(right, left);
+}
+
 function requireRevision(expected: string | undefined, actual: string): void {
   if (!expected) throw new VaultError("expected_revision is required when modifying an existing file.", { code: "CONFLICT", details: { actualRevision: actual } });
   if (expected !== actual) throw new VaultError("File changed since it was read.", { code: "CONFLICT", details: { expectedRevision: expected, actualRevision: actual } });
 }
 
-async function atomicWrite(destination: string, content: string, mode?: number): Promise<void> {
+async function atomicWrite(destination: string, content: string, mode?: number, authorize?: () => Promise<void>): Promise<void> {
+  await authorize?.();
   await fs.mkdir(path.dirname(destination), { recursive: true });
   // Stage on the destination filesystem, in a private directory. A shared
   // destination's permissions must not expose the staging file while writing.
@@ -355,6 +412,7 @@ async function atomicWrite(destination: string, content: string, mode?: number):
     } finally {
       await handle.close();
     }
+    await authorize?.();
     await fs.rename(temporary, destination);
   } catch (error) {
     throw mapFsError(error, destination);

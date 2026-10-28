@@ -1,7 +1,7 @@
 import { constants, type Stats } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 
 import chokidar, { type FSWatcher } from "chokidar";
 import MiniSearch from "minisearch";
@@ -30,8 +30,15 @@ type PersistedIndex = {
 
 type SearchRequest = {
   query: SearchQuery;
+  authorization: SearchAuthorization | undefined;
   resolve: (response: SearchResponse) => void;
   reject: (error: unknown) => void;
+};
+
+export type SearchAuthorization = {
+  fingerprint: string;
+  allowsPath(absolute: string): Promise<boolean>;
+  assertActive(): void;
 };
 
 const INDEX_FILE = "search-index.json";
@@ -52,6 +59,7 @@ export class VaultSearchService {
   private consistencyError: string | undefined;
   private cacheDirty = false;
   private searchBatch: SearchRequest[] | undefined;
+  private readonly cursorKey = randomBytes(32);
 
   public constructor(
     private readonly vaultRoot: string,
@@ -114,9 +122,9 @@ export class VaultSearchService {
     return { indexedFiles: this.documents.size, mode: this.effectiveMode };
   }
 
-  public search(query: SearchQuery): Promise<SearchResponse> {
+  public search(query: SearchQuery, authorization?: SearchAuthorization): Promise<SearchResponse> {
     return new Promise<SearchResponse>((resolve, reject) => {
-      const request = { query, resolve, reject };
+      const request = { query, authorization, resolve, reject };
       if (this.searchBatch && this.searchBatch.length < MAX_SEARCH_BATCH) {
         this.searchBatch.push(request);
         return;
@@ -131,19 +139,36 @@ export class VaultSearchService {
         // Hold the operation queue while regex workers run against this snapshot.
         // Mutations/rebuilds seal the batch and cannot interleave with projections.
         for (const pending of batch) {
-          try { pending.resolve(await this.searchNow(pending.query)); }
+          try { pending.resolve(await this.searchNow(pending.query, pending.authorization)); }
           catch (error) { pending.reject(error); }
         }
       }).catch((error: unknown) => { for (const pending of batch) pending.reject(error); });
     });
   }
 
-  private async searchNow(query: SearchQuery): Promise<SearchResponse> {
-    const offset = decodeCursor(query.cursor);
+  private async searchNow(query: SearchQuery, authorization?: SearchAuthorization): Promise<SearchResponse> {
+    authorization?.assertActive();
+    const binding = authorization ? createHash("sha256").update(JSON.stringify({
+      fingerprint: authorization.fingerprint, query: { ...query, cursor: undefined },
+    })).digest("hex") : undefined;
+    const offset = binding ? this.decodeScopedCursor(query.cursor, binding) : decodeCursor(query.cursor);
+    // Shared cache is server-private/global-policy only. Construct a private
+    // authorized projection BEFORE ranking, regex evaluation, counts or snippets.
+    const documents = authorization ? new Map<string, SearchDocument>() : this.documents;
+    if (authorization) {
+      for (const [id, document] of this.documents) {
+        if (await authorization.allowsPath(path.join(this.vaultRoot, document.path))) documents.set(id, document);
+      }
+    }
+    let index = this.miniSearch;
+    if (authorization && this.effectiveMode === "indexed") {
+      index = createMiniSearch();
+      index.addAll([...documents.values()]);
+    }
     const exact = query.match === "exact" || query.caseSensitive === true;
     let results = this.effectiveMode === "indexed" && !exact && query.query?.trim()
-      ? this.miniSearch.search(query.query, { prefix: true, fuzzy: 0.2 }).map((result) => ({ document: this.documents.get(String(result.id)), score: result.score }))
-      : [...this.documents.values()].map((document) => ({ document, score: 1 }));
+      ? index.search(query.query, { prefix: true, fuzzy: 0.2 }).map((result) => ({ document: documents.get(String(result.id)), score: result.score }))
+      : [...documents.values()].map((document) => ({ document, score: 1 }));
 
     const needle = query.query?.trim();
     results = results.filter((candidate) => {
@@ -168,6 +193,15 @@ export class VaultSearchService {
       results = results.filter((candidate, index) => matches.has(index) && this.documents.has(candidate.document!.path));
     }
 
+    // Filesystem aliases and consent can change while regex workers run.
+    if (authorization) {
+      const allowed = new Set<string>();
+      for (const candidate of results) {
+        if (candidate.document && await authorization.allowsPath(path.join(this.vaultRoot, candidate.document.path))) allowed.add(candidate.document.path);
+      }
+      results = results.filter((candidate) => candidate.document && allowed.has(candidate.document.path));
+      authorization.assertActive();
+    }
     if (query.sort === "path") results.sort((left, right) => left.document!.path.localeCompare(right.document!.path));
     else results.sort((left, right) => right.score - left.score || left.document!.path.localeCompare(right.document!.path));
 
@@ -180,8 +214,27 @@ export class VaultSearchService {
     const nextOffset = offset + output.length;
     return {
       results: output,
-      ...(nextOffset < results.length ? { nextCursor: encodeCursor(nextOffset) } : {}),
+      ...(nextOffset < results.length ? { nextCursor: binding ? this.encodeScopedCursor(nextOffset, binding) : encodeCursor(nextOffset) } : {}),
     };
+  }
+
+  private encodeScopedCursor(offset: number, binding: string): string {
+    const payload = Buffer.from(JSON.stringify({ offset, binding })).toString("base64url");
+    return `${payload}.${createHmac("sha256", this.cursorKey).update(payload).digest("base64url")}`;
+  }
+
+  private decodeScopedCursor(cursor: string | undefined, binding: string): number {
+    if (!cursor) return 0;
+    try {
+      const [payload, signature, extra] = cursor.split(".");
+      if (!payload || !signature || extra !== undefined || cursor.length > 2048) throw new Error();
+      const expected = createHmac("sha256", this.cursorKey).update(payload).digest();
+      const actual = Buffer.from(signature, "base64url");
+      if (actual.length !== expected.length || !timingSafeEqual(expected, actual)) throw new Error();
+      const value = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { offset?: unknown; binding?: unknown };
+      if (value.binding !== binding || typeof value.offset !== "number" || !Number.isSafeInteger(value.offset) || value.offset < 0) throw new Error();
+      return value.offset;
+    } catch { throw new VaultError("Invalid search cursor.", { code: "INVALID_QUERY" }); }
   }
 
   /** Reconcile committed mutations (under their lock) and watcher paths. */
