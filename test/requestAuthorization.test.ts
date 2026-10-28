@@ -481,12 +481,17 @@ describe.each(["scan", "indexed"] as const)("private search projections in %s mo
   it("rejects a grant revoked while evaluating an asynchronous search projection", async () => {
     const a = scoped();
     const lstat = fs.lstat.bind(fs);
+    let revoked = false;
     vi.spyOn(fs, "lstat").mockImplementation(async (...args: Parameters<typeof fs.lstat>) => {
       const stat = await lstat(...args);
-      if (String(args[0]).endsWith("Notes/A.md")) grants.revoke("grant-A");
+      if (String(args[0]).split(path.sep).join("/").endsWith("Notes/A.md")) {
+        grants.revoke("grant-A");
+        revoked = true;
+      }
       return stat;
     });
     await expect(search(a)).rejects.toMatchObject({ code: "ACCESS_DENIED" });
+    expect(revoked).toBe(true);
   });
 });
 
