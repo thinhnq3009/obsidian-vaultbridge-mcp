@@ -4,6 +4,10 @@
   "type": "module",
   "scripts": {
     "smoke": "node smoke.mjs",
+    "probe:revocation": "node lifecycle-revocation.mjs",
+    "probe:opaque": "node lifecycle-revocation.mjs --opaque",
+    "probe:opaque-local": "node lifecycle-revocation.mjs --opaque-local",
+    "probe:concurrency": "node lifecycle-revocation.mjs --opaque-local --concurrency",
     "codemod:dry-run": "mcp-codemod v1-to-v2 --dry-run ../../.."
   },
   "engines": {
@@ -12,6 +16,7 @@
   "dependencies": {
     "@better-auth/cimd": "1.7.13",
     "@better-auth/mcp": "1.7.13",
+    "@better-auth/oauth-provider": "1.7.13",
     "@modelcontextprotocol/express": "2.0.2",
     "@modelcontextprotocol/server": "2.4.0",
     "better-auth": "1.7.13",
