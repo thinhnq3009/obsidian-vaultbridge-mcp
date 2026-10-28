@@ -11,6 +11,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { createApplication, createMcpServer, type ApplicationContext } from "./server.js";
 import type { AppConfig } from "./types.js";
 import { RequestBudgets } from "./auth/budgets.js";
+import type { startOwnerServer } from "./auth/http.js";
 
 type ApplicationFactory = (config: AppConfig) => Promise<ApplicationContext>;
 
@@ -19,7 +20,7 @@ export async function startHttpServer(config: AppConfig, options: { createApplic
   validateHttpDeployment(config);
   const application = await (options.createApplication ?? createApplication)(config);
   const mode = httpAuthMode(config);
-  let ownerService: Awaited<ReturnType<typeof import("./auth/http.js")["startOwnerServer"]>> | undefined;
+  let ownerService: Awaited<ReturnType<typeof startOwnerServer>> | undefined;
   const resource = config.mcpOauthIssuer ? `${new URL(config.mcpOauthIssuer).origin}${config.mcpHttpPath}` : undefined;
   try {
     if (mode === "oauth") {
