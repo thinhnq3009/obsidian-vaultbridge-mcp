@@ -11,8 +11,6 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { createApplication, createMcpServer, type ApplicationContext } from "./server.js";
 import type { AppConfig } from "./types.js";
 import { RequestBudgets } from "./auth/budgets.js";
-import { startOwnerServer } from "./auth/http.js";
-import { authDataDirectory } from "./auth/storage.js";
 
 type ApplicationFactory = (config: AppConfig) => Promise<ApplicationContext>;
 
@@ -21,14 +19,19 @@ export async function startHttpServer(config: AppConfig, options: { createApplic
   validateHttpDeployment(config);
   const application = await (options.createApplication ?? createApplication)(config);
   const mode = httpAuthMode(config);
-  let ownerService: Awaited<ReturnType<typeof startOwnerServer>> | undefined;
+  let ownerService: Awaited<ReturnType<typeof import("./auth/http.js")["startOwnerServer"]>> | undefined;
   const resource = config.mcpOauthIssuer ? `${new URL(config.mcpOauthIssuer).origin}${config.mcpHttpPath}` : undefined;
   try {
-    if (mode === "oauth") ownerService = await startOwnerServer({
-      directory: config.mcpAuthDirectory ?? authDataDirectory(), vaultPath: config.vaultPath!,
-      port: config.mcpOwnerPort ?? 39146, requireOwner: true,
-      oauth: { issuer: config.mcpOauthIssuer!, resource: resource! },
-    });
+    if (mode === "oauth") {
+      // Legacy none/token/STDIO must not even load SQLite/owner modules.
+      const { startOwnerServer } = await import("./auth/http.js");
+      const { authDataDirectory } = await import("./auth/storage.js");
+      ownerService = await startOwnerServer({
+        directory: config.mcpAuthDirectory ?? authDataDirectory(), vaultPath: config.vaultPath!,
+        port: config.mcpOwnerPort ?? 39146, requireOwner: true,
+        oauth: { issuer: config.mcpOauthIssuer!, resource: resource! },
+      });
+    }
   } catch (error) { await application.close(); throw error; }
   if (mode === "none") process.stderr.write("[vaultbridge] WARNING: unauthenticated MCP access; global vault policy only.\n");
   if (mode === "token" && !config.mcpAuthMode) process.stderr.write("[vaultbridge] Legacy MCP_AUTH_TOKEN selected token mode; set MCP_AUTH_MODE=token explicitly.\n");
