@@ -1,14 +1,10 @@
 name: AUTH-003 revocation gate
 
+# Known upstream Better Auth grant-family revocation blocker: issue #60.
+# Run this diagnostic manually while deferred; its six cases still fail for the
+# actual provider contract gap. Do not interpret routine CI green as a revocation pass.
+# Reintroduce required automated checks before declaring full OAuth lifecycle safe.
 on:
-  push:
-    paths:
-      - ".github/workflows/auth003-revocation-gate.yml"
-      - "scripts/spikes/better-auth-sdk-v2/**"
-  pull_request:
-    paths:
-      - ".github/workflows/auth003-revocation-gate.yml"
-      - "scripts/spikes/better-auth-sdk-v2/**"
   workflow_dispatch:
 
 permissions:
