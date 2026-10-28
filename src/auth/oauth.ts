@@ -7,7 +7,7 @@ import { jwt } from "better-auth/plugins";
 import { z } from "zod";
 
 export const oauthScopes = ["vault:read", "vault:write", "offline_access"] as const;
-export type OAuthProviderOptions = { issuer: string; resource: string; ownerOrigin: string };
+export type OAuthProviderOptions = { issuer: string; resource: string; ownerOrigin: string; vaultId: string };
 
 /** Provider-owned active opaque-token validation, not JWT decoding/introspection-by-HTTP. */
 export function oauthPlugins(options: OAuthProviderOptions) {

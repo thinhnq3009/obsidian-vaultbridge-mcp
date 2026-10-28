@@ -41,7 +41,7 @@ export async function oauthHarness(overrides: Partial<AppConfig> = {}) {
       ...overrides,
     });
     server = await startHttpServer(config);
-    const ownerOrigin = server.ownerOrigin!;
+    let ownerOrigin = server.ownerOrigin!;
     async function post(endpoint: string, body: unknown, cookie = "") {
       return fetch(`${ownerOrigin}${endpoint}`, {
         method: "POST", redirect: "manual", headers: {
@@ -105,7 +105,24 @@ export async function oauthHarness(overrides: Partial<AppConfig> = {}) {
       return await result.json() as { access_token: string; refresh_token: string; scope: string };
     }
     return {
-      vault, directory, config, origin, ownerOrigin, cookie, post, form, begin, consent, grant, exchange,
+      vault, directory, config, origin, get ownerOrigin() { return ownerOrigin; }, cookie, post, form, begin, consent, grant, exchange,
+      async restart() {
+        await new Promise<void>((resolve) => { server!.close(() => { resolve(); }); server!.closeIdleConnections(); });
+        await server!.closed;
+        server = await startHttpServer(config);
+        ownerOrigin = server.ownerOrigin!;
+      },
+      async recoverOwner() {
+        await new Promise<void>((resolve) => { server!.close(() => { resolve(); }); server!.closeIdleConnections(); });
+        await server!.closed;
+        const recovery = await startOwnerServer({ directory, vaultPath: vault, port: 0, recover: true });
+        try {
+          const token = await fs.readFile(recovery.tokenPath!, "utf8");
+          expect(await recovery.owner.enroll({ password: "recovered-disposable-password" }, token)).toBe(true);
+        } finally { await recovery.close(); }
+        server = await startHttpServer(config);
+        ownerOrigin = server.ownerOrigin!;
+      },
       async close() {
         if (server) {
           await new Promise<void>((resolve) => { server!.close(() => { resolve(); }); server!.closeIdleConnections(); });

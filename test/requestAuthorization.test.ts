@@ -94,6 +94,19 @@ afterEach(async () => {
 });
 
 describe("trusted immutable request contexts and explicit grants", () => {
+  it("resolves exactly one live principal/client/vault/resource grant and denies ambiguity", () => {
+    expect(grants.resolve("user-A", "A", "vault", resource)?.grantId).toBe("grant-A");
+    expect(grants.resolve("user-B", "A", "vault", resource)).toBeUndefined();
+    expect(grants.resolve("user-A", "A", "other-vault", resource)).toBeUndefined();
+    expect(grants.resolve("user-A", "A", "vault", "https://other.example/mcp")).toBeUndefined();
+    grants.put({ ...grant(), grantId: "duplicate-grant" });
+    expect(grants.resolve("user-A", "A", "vault", resource)).toBeUndefined();
+    grants.revoke("duplicate-grant");
+    expect(grants.resolve("user-A", "A", "vault", resource)?.grantId).toBe("grant-A");
+    expect(grants.list()).toHaveLength(3);
+    db.prepare("UPDATE vaultbridge_vault_grant SET document=? WHERE grant_id=?").run("malformed-json", "duplicate-grant");
+    expect(() => grants.resolve("user-A", "A", "vault", resource)).toThrow(/authorization denied/);
+  });
   it("freezes context and scopes, rejects missing fields and structural/decoded claims", () => {
     const auth = context();
     expect(Object.isFrozen(auth)).toBe(true);

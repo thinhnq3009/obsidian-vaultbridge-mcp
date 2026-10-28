@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { betterAuth } from "better-auth";
 import { z } from "zod";
 import { verifyOAuthQueryParams } from "@better-auth/oauth-provider";
@@ -8,6 +8,11 @@ import { verifyOAuthQueryParams } from "@better-auth/oauth-provider";
 import { LoginBudget } from "./loginBudget.js";
 import { oauthPlugins, principalVerifier, type OAuthProviderOptions } from "./oauth.js";
 import { migrateOwnerSchema, openAuthStorage } from "./storage.js";
+import { SqliteGrantStore, vaultGrantSchema } from "./grants.js";
+import { createVerifiedAuthContext, authorizationDenied } from "./requestContext.js";
+import { assertVerifiedPrincipal, type VerifiedPrincipal } from "./oauth.js";
+import { createRequestBackend } from "../backend/authorized.js";
+import type { VaultBackend } from "../backend/types.js";
 
 const credentials = z.object({ email: z.email().max(254).transform((email) => email.trim().toLowerCase()), password: z.string().min(12).max(128) }).strict();
 const recoveryPassword = z.object({ password: z.string().min(12).max(128) }).strict();
@@ -74,6 +79,9 @@ export async function createOwnerAuth(options: { directory: string; vaultPath: s
       (token) => auth.api.verifyVaultAccess({ body: { token } }),
       { ...options.oauth, ownerId },
     ) : undefined;
+    // Also open the application-owned grant store during standalone recovery:
+    // provider session deletion can detach opaque tokens' session references.
+    const grants = new SqliteGrantStore(db);
     let enrolling = false;
     function consumeToken() {
       tokenHash = undefined;
@@ -84,10 +92,26 @@ export async function createOwnerAuth(options: { directory: string; vaultPath: s
       recovering: options.recover === true,
       hasOwner: () => Boolean(ownerId()),
       verifyPrincipal,
+      backendForPrincipal(backend: VaultBackend, principal: VerifiedPrincipal, authorization: string): VaultBackend {
+        if (!options.oauth || !grants || !verifyPrincipal) throw authorizationDenied();
+        assertVerifiedPrincipal(principal);
+        const grant = grants.resolve(principal.principalId, principal.clientId, options.oauth.vaultId, options.oauth.resource);
+        if (!grant) throw authorizationDenied();
+        const context = createVerifiedAuthContext(principal, grant, randomUUID());
+        return createRequestBackend(backend, {
+          context, grants, vaultId: options.oauth.vaultId, resource: options.oauth.resource,
+          async verifyRequest() {
+            const current = await verifyPrincipal(authorization);
+            if (current.principalId !== principal.principalId || current.clientId !== principal.clientId
+              || current.resource !== principal.resource || JSON.stringify([...current.scopes].sort()) !== JSON.stringify([...principal.scopes].sort())) throw authorizationDenied();
+          },
+        });
+      },
       /** Explicit public allowlist: never expose owner/session/admin APIs. */
       async handleOAuth(request: Request, peer: string): Promise<Response> {
         if (!options.oauth || !ownerId()) return Response.json({ error: "OAuth unavailable" }, { status: 503 });
         const url = new URL(request.url);
+        if (url.origin !== new URL(options.oauth.issuer).origin) return Response.json({ error: "Forbidden" }, { status: 403 });
         const resourcePath = new URL(options.oauth.resource).pathname;
         const allowed = request.method === "GET" ? [
           `/.well-known/oauth-protected-resource${resourcePath}`,
@@ -114,6 +138,7 @@ export async function createOwnerAuth(options: { directory: string; vaultPath: s
           try {
             const existing = ownerId();
             if (options.recover && existing) {
+              grants.revokePrincipal(existing);
               await context.internalAdapter.updatePassword(existing, hash);
               await context.internalAdapter.deleteUserSessions(existing);
             } else {
@@ -159,6 +184,39 @@ export async function createOwnerAuth(options: { directory: string; vaultPath: s
         }
         const session = await auth.api.getSession({ headers });
         if (!session || session.user.id !== ownerId()) return Response.json({ error: "Unauthorized" }, { status: 401 });
+        if (options.oauth && grants) {
+          if (url.pathname === "/oauth/grants" && request.method === "GET") return Response.json({
+            vaultId: options.oauth.vaultId, resource: options.oauth.resource,
+            grants: grants.list().filter((grant) => grant.principalId === session.user.id && grant.vaultId === options.oauth!.vaultId && grant.resource === options.oauth!.resource),
+          });
+          if (url.pathname === "/oauth/grants/revoke" && request.method === "POST") {
+            const parsed = z.object({ grantId: z.string().min(1).max(512) }).strict().safeParse(await forwarded.json());
+            const grant = parsed.success ? grants.get(parsed.data.grantId) : undefined;
+            if (!grant || grant.principalId !== session.user.id || grant.vaultId !== options.oauth.vaultId || grant.resource !== options.oauth.resource) return Response.json({ error: "Invalid grant" }, { status: 400 });
+            grants.revoke(grant.grantId);
+            return Response.json({ success: true });
+          }
+          if (url.pathname === "/oauth/grants" && request.method === "POST") {
+            const body = vaultGrantSchema.pick({ principalPermissions: true, clientPermissions: true }).extend({
+              oauth_query: z.string().min(1).max(8192),
+            }).strict().safeParse(await forwarded.json());
+            if (!body.success || !await verifyOAuthQueryParams(body.data.oauth_query, storage.secret)) return Response.json({ error: "Invalid grant" }, { status: 400 });
+            const query = new URLSearchParams(body.data.oauth_query);
+            const clientId = query.get("client_id") ?? "";
+            const scopes = (query.get("scope") ?? "").split(" ");
+            if (query.get("resource") !== options.oauth.resource || query.getAll("resource").length !== 1
+              || !scopes.some((scope) => scope === "vault:read" || scope === "vault:write")) return Response.json({ error: "Invalid grant" }, { status: 400 });
+            const existing = grants.resolve(session.user.id, clientId, options.oauth.vaultId, options.oauth.resource);
+            const grant = vaultGrantSchema.safeParse({
+              version: 1, grantId: existing?.grantId ?? randomUUID(), principalId: session.user.id,
+              clientId, vaultId: options.oauth.vaultId, resource: options.oauth.resource,
+              consentScopes: scopes, principalPermissions: body.data.principalPermissions, clientPermissions: body.data.clientPermissions,
+            });
+            if (!grant.success) return Response.json({ error: "Invalid grant" }, { status: 400 });
+            grants.put(grant.data);
+            return Response.json({ grantId: grant.data.grantId });
+          }
+        }
         if (options.oauth && ["/oauth/authorize", "/oauth/consent", "/oauth/preview"].includes(url.pathname) && request.method === "POST") {
           const body = z.object({ oauth_query: z.string().min(1).max(8192), accept: z.boolean().optional() }).strict().safeParse(await forwarded.json());
           if (!body.success || !await verifyOAuthQueryParams(body.data.oauth_query, storage.secret)) return Response.json({ error: "Invalid authorization query" }, { status: 400 });
@@ -180,10 +238,14 @@ export async function createOwnerAuth(options: { directory: string; vaultPath: s
           return Response.json({ email: session.user.email, expiresAt: session.session.expiresAt });
         }
         if (url.pathname === "/api/auth/revoke-sessions" && request.method === "POST") {
+          grants.revokePrincipal(session.user.id);
           await context.internalAdapter.deleteUserSessions(session.user.id);
           return Response.json({ success: true });
         }
-        if (url.pathname === "/api/auth/sign-out" && request.method === "POST") return auth.handler(forwarded);
+        if (url.pathname === "/api/auth/sign-out" && request.method === "POST") {
+          grants.revokePrincipal(session.user.id);
+          return auth.handler(forwarded);
+        }
         // No catch-all forwarding: public signup, resets, account mutation, OAuth etc. stay closed.
         return Response.json({ error: "Not found" }, { status: 404 });
       },

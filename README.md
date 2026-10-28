@@ -438,3 +438,5 @@ AUTH-003 now has an explicit-opt-in Better Auth runtime. It remains
 approval. See [runtime configuration, verified identity contract, limits and
 rollback](docs/AUTH-003-runtime.md). Existing STDIO/static-token/legacy loopback
 modes remain available. No automatic OAuth migration is performed.
+See [AUTH-004 Phase B](docs/AUTH-004-phase-b.md) for owner-only consent/grants,
+request-scoped enforcement and live OAuth-to-MCP test boundaries.

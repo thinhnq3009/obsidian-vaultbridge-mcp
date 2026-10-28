@@ -45,8 +45,9 @@ introspection round trip. The immutable identity additionally checks exact
 issuer, single audience/resource, owner subject, client, expiry, Bearer token
 type and supported vault scopes. No request header supplies a principal.
 The scoped-backend consumer must accept only objects in the in-process verified
-identity registry. This prerequisite deliberately returns **403** for even valid
-OAuth tokens until Phase B installs the live SQLite-grant bridge.
+identity registry. The #62 prerequisite alone deliberately returns **403** for
+even valid OAuth tokens. [Phase B](AUTH-004-phase-b.md) installs the live
+SQLite-grant bridge; missing/revoked grants still return 403.
 
 Provider owns PKCE S256, single-use codes, exact redirects, signed consent,
 resource binding, refresh rotation/reuse and individual token revocation.

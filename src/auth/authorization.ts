@@ -22,6 +22,7 @@ export class OperationAuthorization {
     private readonly resource: string,
     private readonly tool: string,
     private readonly action: PathAction,
+    private readonly verifyRequest?: () => Promise<void>,
   ) {
     this.scope = writeActions.has(action) ? "write" : "read";
     this.assertActive();
@@ -42,6 +43,10 @@ export class OperationAuthorization {
   }
 
   public assertActive(): void { this.current(); }
+  public async revalidate(): Promise<void> {
+    await this.verifyRequest?.();
+    this.assertActive();
+  }
 
   /** Global lexical/canonical/read-only policy is applied separately, below. */
   public decide(target: string): AuthorizationDecision {
@@ -119,7 +124,7 @@ export class RequestAccessPolicy extends VaultAccessPolicy {
   }
 
   public async revalidate(): Promise<void> {
-    this.authorization.assertActive();
+    await this.authorization.revalidate();
     for (const [input, access] of this.checked) await this.resolve(input, access, false);
   }
 

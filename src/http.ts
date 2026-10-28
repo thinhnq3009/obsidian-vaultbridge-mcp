@@ -12,6 +12,7 @@ import { createApplication, createMcpServer, type ApplicationContext } from "./s
 import type { AppConfig } from "./types.js";
 import { RequestBudgets } from "./auth/budgets.js";
 import type { startOwnerServer } from "./auth/http.js";
+import type { VerifiedPrincipal } from "./auth/oauth.js";
 
 type ApplicationFactory = (config: AppConfig) => Promise<ApplicationContext>;
 
@@ -30,7 +31,7 @@ export async function startHttpServer(config: AppConfig, options: { createApplic
       ownerService = await startOwnerServer({
         directory: config.mcpAuthDirectory ?? authDataDirectory(), vaultPath: config.vaultPath!,
         port: config.mcpOwnerPort ?? 39146, requireOwner: true,
-        oauth: { issuer: config.mcpOauthIssuer!, resource: resource! },
+        oauth: { issuer: config.mcpOauthIssuer!, resource: resource!, vaultId: config.mcpVaultId! },
       });
     }
   } catch (error) { await application.close(); throw error; }
@@ -43,8 +44,12 @@ export async function startHttpServer(config: AppConfig, options: { createApplic
   app.use(hostHeaderValidation(config.mcpAllowedHosts ?? ["127.0.0.1", "localhost", "[::1]"]));
   let active = 0;
   const budgets = new RequestBudgets();
+  const principals = new WeakMap<Request, VerifiedPrincipal>();
   app.use(async (request, response, next) => {
     response.set("Cache-Control", "no-store");
+    if (mode === "oauth" && request.headers.host !== new URL(config.mcpOauthIssuer!).host) {
+      response.status(403).json({ error: "Forbidden host" }); return;
+    }
     const origin = request.headers.origin;
     if (origin !== undefined) {
       try {
@@ -72,7 +77,7 @@ export async function startHttpServer(config: AppConfig, options: { createApplic
     if (!oauthRoute && mode === "oauth") {
       try {
         const principal = await ownerService!.owner.verifyPrincipal!(request.headers.authorization);
-        response.locals.principal = principal;
+        principals.set(request, principal);
         budgets.refund(`attempt:${peer}`);
         if (!budgets.take(`client:${JSON.stringify([principal.principalId, principal.clientId])}`, config.mcpAuthenticatedClientRpm ?? 600)) { throttle(); return; }
       } catch { fail(); return; }
@@ -109,10 +114,15 @@ export async function startHttpServer(config: AppConfig, options: { createApplic
   });
 
   app.all(config.mcpHttpPath, async (request: Request<Record<string, string>, unknown, unknown>, response: Response) => {
-    // AUTH-003 verifies identity only. Until Phase B supplies a live scoped
-    // backend, no OAuth identity may fall through to the global backend.
-    if (mode === "oauth") { response.status(403).json({ error: "No authorized vault grant" }); return; }
-    const server = createMcpServer(application.backend, { colorfulLogs: config.colorfulLogs });
+    let backend = application.backend;
+    if (mode === "oauth") {
+      const principal = principals.get(request);
+      try {
+        if (!principal || !ownerService || !request.headers.authorization) throw new Error("No principal");
+        backend = ownerService.owner.backendForPrincipal(backend, principal, request.headers.authorization);
+      } catch { response.status(403).json({ error: "No authorized vault grant" }); return; }
+    }
+    const server = createMcpServer(backend, { colorfulLogs: config.colorfulLogs });
     const transport = new StreamableHTTPServerTransport();
     response.on("close", () => { void transport.close(); void server.close(); });
     try {

@@ -15,10 +15,11 @@ export type RequestBackendOptions = {
   grants: GrantReader;
   vaultId: string;
   resource: string;
+  verifyRequest?: () => Promise<void>;
   audit?: (event: Readonly<{ action: PathAction; allowed: boolean }>) => void;
 };
 
-/** Not wired to HTTP in Phase A. Caller must choose mode from trusted configuration. */
+/** Caller must choose mode from trusted configuration, never request input. */
 export function createRequestBackend(backend: VaultBackend, options: RequestBackendOptions): VaultBackend {
   if (!["oauth", "token", "none", "stdio"].includes(options.context.mode)) throw authorizationDenied();
   if (options.context.mode !== "oauth") return backend;
@@ -52,9 +53,10 @@ class AuthorizedVaultBackend implements VaultBackend {
   private async invoke<T>(action: PathAction, execute: (backend: FilesystemVaultBackend) => Promise<T>): Promise<T> {
     let allowed = false;
     try {
-      const authorization = new OperationAuthorization(this.context, this.options.grants, this.options.vaultId, this.options.resource, this.tool.getStore() ?? "", action);
+      const authorization = new OperationAuthorization(this.context, this.options.grants, this.options.vaultId, this.options.resource, this.tool.getStore() ?? "", action, this.options.verifyRequest);
+      await authorization.revalidate();
       const result = await execute(this.backend.withAuthorization(authorization));
-      authorization.assertActive();
+      await authorization.revalidate();
       allowed = true;
       return result;
     } catch (error) {

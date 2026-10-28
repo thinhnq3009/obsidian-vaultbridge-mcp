@@ -65,6 +65,7 @@ export class SqliteGrantStore implements GrantReader {
   /** Trusted owner-side API only; intentionally not registered as an MCP tool. */
   public put(input: VaultGrantInput): void {
     const grant = vaultGrantSchema.parse(input);
+    if (!this.get(grant.grantId) && Number(this.db.prepare("SELECT count(*) AS count FROM vaultbridge_vault_grant").get()?.count) >= 1024) throw authorizationDenied();
     this.db.prepare(`INSERT INTO vaultbridge_vault_grant VALUES (?, ?, 1, 0)
       ON CONFLICT(grant_id) DO UPDATE SET document=excluded.document,
       revision=vaultbridge_vault_grant.revision+1, revoked=0`).run(grant.grantId, JSON.stringify(grant));
@@ -72,6 +73,10 @@ export class SqliteGrantStore implements GrantReader {
 
   public revoke(grantId: string): void {
     this.db.prepare("UPDATE vaultbridge_vault_grant SET revoked=1, revision=revision+1 WHERE grant_id=?").run(grantId);
+  }
+
+  public revokePrincipal(principalId: string): void {
+    for (const grant of this.list()) if (grant.principalId === principalId && !grant.revoked) this.revoke(grant.grantId);
   }
 
   public get(grantId: string): VaultGrant | undefined {
@@ -83,5 +88,23 @@ export class SqliteGrantStore implements GrantReader {
       if (!parsed.success || parsed.data.grantId !== grantId) return undefined;
       return { ...parsed.data, revision: row.revision, revoked: row.revoked === 1 };
     } catch { return undefined; }
+  }
+
+  /** Owner-only enumeration, never registered as an MCP tool or public API. */
+  public list(): VaultGrant[] {
+    const rows = this.db.prepare("SELECT grant_id FROM vaultbridge_vault_grant LIMIT 1025").all();
+    if (rows.length > 1024) throw authorizationDenied();
+    return rows.map((row) => {
+      const grant = typeof row.grant_id === "string" ? this.get(row.grant_id) : undefined;
+      if (!grant) throw authorizationDenied();
+      return grant;
+    });
+  }
+
+  /** Ambiguous or missing live grants fail closed; HTTP input never selects an ID. */
+  public resolve(principalId: string, clientId: string, vaultId: string, resource: string): VaultGrant | undefined {
+    const grants = this.list().filter((grant) => !grant.revoked && grant.principalId === principalId
+      && grant.clientId === clientId && grant.vaultId === vaultId && grant.resource === resource);
+    return grants.length === 1 ? grants[0] : undefined;
   }
 }
