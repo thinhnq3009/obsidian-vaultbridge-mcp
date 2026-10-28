@@ -61,6 +61,17 @@ forwarding, client-ID or principal headers. Stores have a hard entry bound.
 These single-process budgets are not distributed enforcement or benchmark
 results; a proxy may collapse all callers to one peer.
 
+OAuth provider admission is a separate, directly attached `express-rate-limit`
+middleware on `/api/auth` and `/.well-known`, **before body parsing and provider
+authentication**. `MCP_OAUTH_ENDPOINT_RPM=60` (CLI `--oauth-endpoint-rpm`, 1–1000)
+is an aggregate requests/minute ceiling for this single-process provider,
+including discovery/authorize/token/revoke and unknown paths in those
+namespaces. One fixed in-memory bucket prevents forwarding/client-header
+spoofing and unbounded per-client allocation. Excess requests return 429 with
+Retry-After, even for malformed bodies. This does not consume verified MCP
+client capacity or the separate loopback-owner login budget. Provider-native
+route limits still apply; all limiter state is released on shutdown.
+
 ## Compatibility, limits, rollback
 
 - MCP transport remains the established SDK v1 stateless per-request adapter.

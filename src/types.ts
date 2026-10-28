@@ -45,6 +45,7 @@ export type AppConfig = {
   mcpMaxConcurrent?: number;
   mcpAuthenticatedClientRpm?: number;
   mcpUnauthenticatedAttemptRpm?: number;
+  mcpOauthEndpointRpm?: number;
 };
 
 export type VaultErrorCode =
