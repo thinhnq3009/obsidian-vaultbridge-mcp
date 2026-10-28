@@ -2,6 +2,7 @@ import http from "node:http";
 
 import type { Request, Response } from "express";
 import express from "express";
+import { MemoryStore, rateLimit } from "express-rate-limit";
 import { hostHeaderValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
 import { timingSafeEqual } from "node:crypto";
 import { assertSupportedNode } from "./runtime.js";
@@ -89,11 +90,17 @@ export async function startHttpServer(config: AppConfig, options: { createApplic
     if (!budgets.take(oauthRoute ? `oauth:${peer}` : "global", config.mcpRateLimitRpm ?? 1200, config.mcpRateLimitBurst ?? 120)) { throttle(); return; }
     next();
   });
-  app.use(express.json({ limit: 100 * 1024, inflate: false }));
-  app.use(express.urlencoded({ limit: "16kb", extended: false, inflate: false }));
-
-  if (ownerService) app.use(async (request: Request<Record<string, string>, unknown, unknown>, response, next) => {
-    if (!request.path.startsWith("/api/auth/") && !request.path.startsWith("/.well-known/")) { next(); return; }
+  const oauthLimitStore = ownerService ? new MemoryStore() : undefined;
+  if (ownerService) app.use(["/api/auth", "/.well-known"], rateLimit({
+    windowMs: 60000, limit: config.mcpOauthEndpointRpm ?? 60,
+    // Bounded aggregate admission for this single-process OAuth provider. Do
+    // not use caller-controlled forwarding/client headers to allocate buckets.
+    keyGenerator: () => "oauth-provider", store: oauthLimitStore!,
+    standardHeaders: "draft-8", legacyHeaders: false,
+    handler: (_request, response) => { response.status(429).json({ error: "OAuth endpoint budget exceeded" }); },
+  }), express.json({ limit: "16kb", inflate: false }),
+  express.urlencoded({ limit: "16kb", extended: false, inflate: false }),
+  async (request: Request<Record<string, string>, unknown, unknown>, response) => {
     const headers = new Headers();
     for (const name of ["content-type", "origin", "accept"]) {
       const value = request.headers[name];
@@ -113,6 +120,7 @@ export async function startHttpServer(config: AppConfig, options: { createApplic
     response.send(Buffer.from(await result.arrayBuffer()));
   });
 
+  app.use(express.json({ limit: 100 * 1024, inflate: false }));
   app.all(config.mcpHttpPath, async (request: Request<Record<string, string>, unknown, unknown>, response: Response) => {
     let backend = application.backend;
     if (mode === "oauth") {
@@ -150,6 +158,7 @@ export async function startHttpServer(config: AppConfig, options: { createApplic
   server.maxRequestsPerSocket = 100;
   server.closed = new Promise<void>((resolve, reject) => {
     server.on("close", () => {
+      oauthLimitStore?.shutdown();
       void (async () => { try { await ownerService?.close(); } finally { await application.close(); } })().then(resolve, reject);
     });
   });
@@ -160,7 +169,7 @@ export async function startHttpServer(config: AppConfig, options: { createApplic
       server.once("error", reject);
       server.listen(config.mcpHttpPort, config.mcpHttpHost, () => { server.off("error", reject); resolve(); });
     });
-  } catch (error) { await ownerService?.close(); await application.close(); throw error; }
+  } catch (error) { oauthLimitStore?.shutdown(); await ownerService?.close(); await application.close(); throw error; }
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : config.mcpHttpPort;
   const endpoint = `http://${config.mcpHttpHost}:${String(port)}${config.mcpHttpPath}`;

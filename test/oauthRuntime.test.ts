@@ -30,6 +30,32 @@ afterEach(async () => {
 });
 
 describe("experimental production Better Auth OAuth runtime", () => {
+  it("limits provider routes before parsing/authentication without consuming MCP client capacity", async () => {
+    const h = await setup({ mcpOauthEndpointRpm: 4 });
+    const token = await h.exchange(await h.grant());
+    expect((await fetch(`${h.origin}/.well-known/oauth-protected-resource/mcp`)).status).toBe(200);
+    expect((await fetch(`${h.origin}/api/auth/.well-known/oauth-authorization-server`)).status).toBe(200);
+    // Four admitted requests: public authorize, token, and two discovery GETs.
+    // Malformed JSON must be rejected by admission, not parsed or sent to auth.
+    for (const endpoint of ["token", "revoke", "authorize"]) {
+      const rejected = await fetch(`${h.origin}/api/auth/oauth2/${endpoint}`, {
+        method: "POST", headers: {
+          "content-type": "application/json", "x-forwarded-for": `198.51.100.${endpoint.length}`,
+          "x-real-ip": "203.0.113.1", "x-client-id": endpoint,
+        }, body: "{",
+      });
+      expect(rejected.status).toBe(429);
+      expect(Number(rejected.headers.get("retry-after"))).toBeGreaterThan(0);
+      expect(await rejected.json()).toEqual({ error: "OAuth endpoint budget exceeded" });
+    }
+    const flood = await Promise.all(Array.from({ length: 8 }, () =>
+      fetch(`${h.origin}/.well-known/oauth-protected-resource/mcp`)));
+    expect(flood.every((response) => response.status === 429)).toBe(true);
+    // OAuth admission must never cap verified MCP calls or owner management.
+    expect((await fetch(`${h.origin}/mcp`, { method: "POST", headers: { authorization: `Bearer ${token.access_token}` } })).status).toBe(403);
+    expect((await fetch(`${h.origin}/mcp`, { method: "POST" })).status).toBe(401);
+    expect((await fetch(`${h.ownerOrigin}/api/auth/get-session`, { headers: { cookie: h.cookie } })).status).toBe(200);
+  });
   it("requires explicit opt-in and unambiguous safe deployment configuration", () => {
     const base = makeConfig({ mcpAuthMode: "oauth" });
     expect(() => validateHttpDeployment(base)).toThrow(/default-off/);

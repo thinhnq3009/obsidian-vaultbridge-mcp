@@ -51,6 +51,7 @@ const envSchema = z.object({
   MCP_MAX_CONCURRENT: z.coerce.number().int().min(1).max(128).default(32),
   MCP_AUTHENTICATED_CLIENT_RPM: z.coerce.number().int().min(1).max(100000).default(600),
   MCP_UNAUTHENTICATED_ATTEMPT_RPM: z.coerce.number().int().min(1).max(1000).default(60),
+  MCP_OAUTH_ENDPOINT_RPM: z.coerce.number().int().min(1).max(1000).default(60),
 });
 
 type CliOverrides = Record<string, string | undefined>;
@@ -111,6 +112,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env, argv: string
     mcpMaxConcurrent: data.MCP_MAX_CONCURRENT,
     mcpAuthenticatedClientRpm: data.MCP_AUTHENTICATED_CLIENT_RPM,
     mcpUnauthenticatedAttemptRpm: data.MCP_UNAUTHENTICATED_ATTEMPT_RPM,
+    mcpOauthEndpointRpm: data.MCP_OAUTH_ENDPOINT_RPM,
   };
   if (config.mcpTransport === "http") validateHttpDeployment(config);
   return config;
@@ -187,6 +189,7 @@ export function parseCliArgs(argv: string[]): CliOverrides {
     "mcp-rpm": "MCP_RATE_LIMIT_RPM", "mcp-burst": "MCP_RATE_LIMIT_BURST",
     "mcp-max-concurrent": "MCP_MAX_CONCURRENT", "authenticated-client-rpm": "MCP_AUTHENTICATED_CLIENT_RPM",
     "unauthenticated-attempt-rpm": "MCP_UNAUTHENTICATED_ATTEMPT_RPM",
+    "oauth-endpoint-rpm": "MCP_OAUTH_ENDPOINT_RPM",
   };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
