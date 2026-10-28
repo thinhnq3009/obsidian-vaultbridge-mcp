@@ -5,26 +5,42 @@ import express from "express";
 import { hostHeaderValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
 import { timingSafeEqual } from "node:crypto";
 import { assertSupportedNode } from "./runtime.js";
-import { validateHttpDeployment } from "./config.js";
+import { httpAuthMode, validateHttpDeployment } from "./config.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 import { createApplication, createMcpServer, type ApplicationContext } from "./server.js";
 import type { AppConfig } from "./types.js";
+import { RequestBudgets } from "./auth/budgets.js";
+import { startOwnerServer } from "./auth/http.js";
+import { authDataDirectory } from "./auth/storage.js";
 
 type ApplicationFactory = (config: AppConfig) => Promise<ApplicationContext>;
 
-export async function startHttpServer(config: AppConfig, options: { createApplication?: ApplicationFactory } = {}): Promise<http.Server> {
+export async function startHttpServer(config: AppConfig, options: { createApplication?: ApplicationFactory } = {}): Promise<http.Server & { closed: Promise<void>; ownerOrigin?: string }> {
   assertSupportedNode();
   validateHttpDeployment(config);
   const application = await (options.createApplication ?? createApplication)(config);
+  const mode = httpAuthMode(config);
+  let ownerService: Awaited<ReturnType<typeof startOwnerServer>> | undefined;
+  const resource = config.mcpOauthIssuer ? `${new URL(config.mcpOauthIssuer).origin}${config.mcpHttpPath}` : undefined;
+  try {
+    if (mode === "oauth") ownerService = await startOwnerServer({
+      directory: config.mcpAuthDirectory ?? authDataDirectory(), vaultPath: config.vaultPath!,
+      port: config.mcpOwnerPort ?? 39146, requireOwner: true,
+      oauth: { issuer: config.mcpOauthIssuer!, resource: resource! },
+    });
+  } catch (error) { await application.close(); throw error; }
+  if (mode === "none") process.stderr.write("[vaultbridge] WARNING: unauthenticated MCP access; global vault policy only.\n");
+  if (mode === "token" && !config.mcpAuthMode) process.stderr.write("[vaultbridge] Legacy MCP_AUTH_TOKEN selected token mode; set MCP_AUTH_MODE=token explicitly.\n");
+  if (ownerService) process.stderr.write(`[vaultbridge] EXPERIMENTAL OAuth (#60 unresolved); owner login/consent: ${ownerService.origin}/login\n`);
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", false);
   app.use(hostHeaderValidation(config.mcpAllowedHosts ?? ["127.0.0.1", "localhost", "[::1]"]));
   let active = 0;
-  let windowStart = Date.now();
-  let requests = 0;
-  app.use((request, response, next) => {
+  const budgets = new RequestBudgets();
+  app.use(async (request, response, next) => {
+    response.set("Cache-Control", "no-store");
     const origin = request.headers.origin;
     if (origin !== undefined) {
       try {
@@ -33,21 +49,65 @@ export async function startHttpServer(config: AppConfig, options: { createApplic
         if (parsed.origin !== origin || parsed.protocol !== protocol || parsed.host !== request.headers.host) throw new Error("origin");
       } catch { response.status(403).json({ error: "Forbidden origin" }); return; }
     }
-    if (config.mcpAuthToken && !validToken(request.headers.authorization, config.mcpAuthToken)) {
+    const oauthRoute = ownerService && (request.path.startsWith("/api/auth/") || request.path.startsWith("/.well-known/"));
+    const fail = () => {
+      if (mode === "oauth") response.set("WWW-Authenticate", `Bearer resource_metadata="${new URL(resource!).origin}/.well-known/oauth-protected-resource${config.mcpHttpPath}"`);
       response.status(401).json({ jsonrpc: "2.0", error: { code: -32001, message: "Unauthorized" }, id: null }); return;
+    };
+    const throttle = () => {
+      response.setHeader("Retry-After", "60");
+      response.status(429).json({ error: "Request budget exceeded" });
+    };
+    // Reserve capacity before any asynchronous provider/database/network work.
+    if (active >= (config.mcpMaxConcurrent ?? 32)) { throttle(); return; }
+    active++;
+    response.once("close", () => { active--; });
+    const peer = request.socket.remoteAddress ?? "unknown";
+    if (!oauthRoute && mode !== "none" && !budgets.take(`attempt:${peer}`, config.mcpUnauthenticatedAttemptRpm ?? 60)) { throttle(); return; }
+    if (!oauthRoute && mode === "token" && !validToken(request.headers.authorization, config.mcpAuthToken!)) { fail(); return; }
+    if (!oauthRoute && mode === "oauth") {
+      try {
+        const principal = await ownerService!.owner.verifyPrincipal!(request.headers.authorization);
+        response.locals.principal = principal;
+        budgets.refund(`attempt:${peer}`);
+        if (!budgets.take(`client:${JSON.stringify([principal.principalId, principal.clientId])}`, config.mcpAuthenticatedClientRpm ?? 600)) { throttle(); return; }
+      } catch { fail(); return; }
     }
+    if (!oauthRoute && mode === "token") budgets.refund(`attempt:${peer}`);
     if (request.headers["content-encoding"] && request.headers["content-encoding"].trim().toLowerCase() !== "identity") {
       response.status(415).json({ error: "Compressed request bodies are disabled" }); return;
     }
-    if (Date.now() - windowStart >= 60_000) { windowStart = Date.now(); requests = 0; }
-    if (++requests > 120 || active >= 32) { response.setHeader("Retry-After", "60"); response.status(429).json({ error: "Request budget exceeded" }); return; }
-    active++;
-    response.once("close", () => { active--; });
+    if (!budgets.take(oauthRoute ? `oauth:${peer}` : "global", config.mcpRateLimitRpm ?? 1200, config.mcpRateLimitBurst ?? 120)) { throttle(); return; }
     next();
   });
   app.use(express.json({ limit: 100 * 1024, inflate: false }));
+  app.use(express.urlencoded({ limit: "16kb", extended: false, inflate: false }));
+
+  if (ownerService) app.use(async (request: Request<Record<string, string>, unknown, unknown>, response, next) => {
+    if (!request.path.startsWith("/api/auth/") && !request.path.startsWith("/.well-known/")) { next(); return; }
+    const headers = new Headers();
+    for (const name of ["content-type", "origin", "accept"]) {
+      const value = request.headers[name];
+      if (typeof value === "string") headers.set(name, value);
+    }
+    const body = request.body;
+    const result = await ownerService.owner.handleOAuth(new globalThis.Request(new URL(request.originalUrl, new URL(resource!).origin), {
+      method: request.method, headers,
+      ...(["GET", "HEAD"].includes(request.method) ? {} : {
+        body: request.is("application/x-www-form-urlencoded")
+          ? new URLSearchParams(body as Record<string, string>).toString() : JSON.stringify(body),
+      }),
+    }), request.socket.remoteAddress ?? "unknown");
+    response.status(result.status);
+    result.headers.forEach((value, name) => { if (name !== "set-cookie") response.setHeader(name, value); });
+    if (result.status === 429) response.setHeader("Retry-After", result.headers.get("x-retry-after") ?? "60");
+    response.send(Buffer.from(await result.arrayBuffer()));
+  });
 
   app.all(config.mcpHttpPath, async (request: Request<Record<string, string>, unknown, unknown>, response: Response) => {
+    // AUTH-003 verifies identity only. Until Phase B supplies a live scoped
+    // backend, no OAuth identity may fall through to the global backend.
+    if (mode === "oauth") { response.status(403).json({ error: "No authorized vault grant" }); return; }
     const server = createMcpServer(application.backend, { colorfulLogs: config.colorfulLogs });
     const transport = new StreamableHTTPServerTransport();
     response.on("close", () => { void transport.close(); void server.close(); });
@@ -65,19 +125,28 @@ export async function startHttpServer(config: AppConfig, options: { createApplic
     const status = typeof error === "object" && error !== null && "status" in error && typeof error.status === "number" ? error.status : 500;
     response.status([400, 413, 415].includes(status) ? status : 500).json({ error: status === 413 ? "Request body too large" : "Invalid request" });
   });
-  const server = http.createServer({ maxHeaderSize: 16 * 1024 }, app);
+  const server = Object.assign(http.createServer({ maxHeaderSize: 16 * 1024 }, app), {
+    closed: Promise.resolve(),
+    ...(ownerService ? { ownerOrigin: ownerService.origin } : {}),
+  });
   server.requestTimeout = 30_000;
   server.headersTimeout = 10_000;
   server.keepAliveTimeout = 5000;
   server.maxConnections = 128;
   server.maxRequestsPerSocket = 100;
-  server.on("close", () => { void application.close(); });
+  server.closed = new Promise<void>((resolve, reject) => {
+    server.on("close", () => {
+      void (async () => { try { await ownerService?.close(); } finally { await application.close(); } })().then(resolve, reject);
+    });
+  });
+  // Callers can await closed; avoid an unhandled rejection during CLI shutdown.
+  void server.closed.catch(() => { process.stderr.write("[vaultbridge] HTTP cleanup failed.\n"); });
   try {
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       server.listen(config.mcpHttpPort, config.mcpHttpHost, () => { server.off("error", reject); resolve(); });
     });
-  } catch (error) { await application.close(); throw error; }
+  } catch (error) { await ownerService?.close(); await application.close(); throw error; }
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : config.mcpHttpPort;
   const endpoint = `http://${config.mcpHttpHost}:${String(port)}${config.mcpHttpPath}`;
