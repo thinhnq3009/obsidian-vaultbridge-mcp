@@ -257,7 +257,8 @@ export class FilesystemVaultBackend implements VaultBackend {
   private async assertWritableTree(directory: string): Promise<void> {
     for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
       const absolute = path.join(directory, entry.name);
-      await this.accessPolicy.resolve(path.relative(this.vaultRealPath, absolute), "write", true, true);
+      const relative = path.relative(this.vaultRealPath, absolute).split(path.sep).join("/");
+      await this.accessPolicy.resolve(relative, "write", true, true);
       if (entry.isDirectory()) await this.assertWritableTree(absolute);
     }
   }

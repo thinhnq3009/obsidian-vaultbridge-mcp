@@ -361,6 +361,32 @@ describe("request-scoped backend enforcement", () => {
     await expect(fs.stat(path.join(vault, "Notes/Moved"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it.each(["move", "delete"] as const)("authorizes recursive %s with Windows-generated subtree separators", async (operation) => {
+    grants.put(grant("A", "Notes", [...pathActions]));
+    const request = scoped();
+    await fs.mkdir(path.join(vault, "Notes/Folder/Nested"), { recursive: true });
+    await fs.writeFile(path.join(vault, "Notes/Folder/Nested/A.md"), "nested content");
+    // Exercise the real subtree walker on every OS, with Windows path.relative
+    // output and its matching separator. Actual filesystem IO stays native.
+    const separator = Object.getOwnPropertyDescriptor(path, "sep")!;
+    const windowsRelative = path.win32.relative;
+    const relative = vi.spyOn(path, "relative").mockImplementation(windowsRelative);
+    Object.defineProperty(path, "sep", { ...separator, value: "\\" });
+    try {
+      await expect(read(request, "Notes\\Folder\\Nested\\A.md")).rejects.toMatchObject({ code: "ACCESS_DENIED" });
+      if (operation === "move") {
+        await run(request, "obsidian_move_path", () => request.movePath("Notes/Folder", "Notes/Moved"));
+        expect(await fs.readFile(path.join(vault, "Notes/Moved/Nested/A.md"), "utf8")).toBe("nested content");
+      } else {
+        await run(request, "obsidian_delete_path", () => request.deletePath("Notes/Folder", { recursive: true }));
+      }
+      await expect(fs.stat(path.join(vault, "Notes/Folder"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      relative.mockRestore();
+      Object.defineProperty(path, "sep", separator);
+    }
+  });
+
   it("intersects global read scope and read-only mode rather than replacing them", async () => {
     const restricted = new FilesystemVaultBackend(makeConfig({ vaultPath: vault, cacheDir: path.join(root, "restricted-cache"), readPaths: ["Secret"], readOnly: true }));
     await restricted.initialize();
