@@ -31,7 +31,9 @@ export async function startHttpServer(config: AppConfig, options: { createApplic
       const { authDataDirectory } = await import("./auth/storage.js");
       ownerService = await startOwnerServer({
         directory: config.mcpAuthDirectory ?? authDataDirectory(), vaultPath: config.vaultPath!,
-        port: config.mcpOwnerPort ?? 39146, requireOwner: true,
+        port: config.mcpOwnerPort ?? 39146,
+        ...(config.mcpOwnerUsername !== undefined ? { ownerUsername: config.mcpOwnerUsername } : {}),
+        ...(config.mcpOwnerPassword !== undefined ? { ownerPassword: config.mcpOwnerPassword } : {}),
         oauth: { issuer: config.mcpOauthIssuer!, resource: resource!, vaultId: config.mcpVaultId! },
       });
     }

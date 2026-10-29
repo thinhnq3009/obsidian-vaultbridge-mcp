@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import { expect } from "vitest";
 
@@ -13,19 +14,23 @@ import type { AppConfig } from "../src/types.js";
 export const clientA = "https://client-a.example/metadata.json";
 export const clientB = "https://client-b.example/metadata.json";
 export const redirectUri = "http://127.0.0.1:49152/callback";
-export const password = "disposable-oauth-owner-password";
+export const password = "disposable-oauth-owner-password-123!";
 
-export async function oauthHarness(overrides: Partial<AppConfig> = {}) {
+export async function oauthHarness(overrides: Partial<AppConfig> = {}, bootstrapDefault = false) {
   const vault = await createTempVault();
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "vaultbridge-oauth-"));
   const cache = await fs.mkdtemp(path.join(os.tmpdir(), "vaultbridge-oauth-cache-"));
   let server: Awaited<ReturnType<typeof startHttpServer>> | undefined;
   try {
-    const bootstrap = await startOwnerServer({ directory, vaultPath: vault, port: 0 });
-    try {
-      const token = await fs.readFile(bootstrap.tokenPath!, "utf8");
-      expect(await bootstrap.owner.enroll({ email: "owner@example.test", password }, token)).toBe(true);
-    } finally { await bootstrap.close(); }
+    if (!bootstrapDefault) {
+      const bootstrap = await startOwnerServer({ directory, vaultPath: vault, port: 0, ownerPassword: password });
+      try {
+        const db = new DatabaseSync(path.join(directory, "auth.sqlite"));
+        db.prepare('UPDATE "user" SET email=?').run("owner@example.test");
+        db.prepare("UPDATE vaultbridge_owner SET username=NULL").run();
+        db.close();
+      } finally { await bootstrap.close(); }
+    }
     // Reserve an OS-selected port so the canonical issuer is known at startup.
     const reservation = http.createServer();
     await new Promise<void>((resolve) => { reservation.listen(0, "127.0.0.1", resolve); });
@@ -49,10 +54,19 @@ export async function oauthHarness(overrides: Partial<AppConfig> = {}) {
         }, body: JSON.stringify(body),
       });
     }
-    const login = await post("/api/auth/sign-in/email", { email: "owner@example.test", password });
+    const identifier = bootstrapDefault ? "obsidian-admin" : "owner@example.test";
+    const login = await post("/api/auth/sign-in/email", { username: identifier, password: bootstrapDefault ? "admin39145" : password });
     expect(login.status).toBe(200);
-    const cookie = login.headers.getSetCookie().map((value) => value.split(";")[0]).join("; ");
+    let cookie = login.headers.getSetCookie().map((value) => value.split(";")[0]).join("; ");
     expect(cookie).not.toBe("");
+    if (bootstrapDefault) {
+      expect((await post("/oauth/grants", {}, cookie)).status).toBe(403);
+      expect((await post("/api/auth/change-password", { currentPassword: "admin39145", newPassword: password }, cookie)).status).toBe(200);
+      expect((await fetch(`${ownerOrigin}/api/auth/get-session`, { headers: { cookie } })).status).toBe(401);
+      const rotated = await post("/api/auth/sign-in/email", { username: identifier, password });
+      expect(rotated.status).toBe(200);
+      cookie = rotated.headers.getSetCookie().map((value) => value.split(";")[0]).join("; ");
+    }
     async function form(endpoint: string, body: Record<string, string>, clientId = clientA) {
       return fetch(`${origin}/api/auth/oauth2/${endpoint}`, {
         method: "POST", redirect: "manual",
@@ -118,7 +132,7 @@ export async function oauthHarness(overrides: Partial<AppConfig> = {}) {
         const recovery = await startOwnerServer({ directory, vaultPath: vault, port: 0, recover: true });
         try {
           const token = await fs.readFile(recovery.tokenPath!, "utf8");
-          expect(await recovery.owner.enroll({ password: "recovered-disposable-password" }, token)).toBe(true);
+          expect(await recovery.owner.recoverPassword({ password: "recovered-disposable-password-123!" }, token)).toBe(true);
         } finally { await recovery.close(); }
         server = await startHttpServer(config);
         ownerOrigin = server.ownerOrigin!;

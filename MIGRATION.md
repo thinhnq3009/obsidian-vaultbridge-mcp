@@ -121,18 +121,22 @@ use local owner recovery to replace the password and revoke every session.
 
 ### First run, crash recovery, and sessions
 
-`node dist/index.js owner-auth --vault /absolute/path` generates a 256-bit setup
-token in the 0600 `setup-token` file (not logs). Read it locally and enter it into
-the setup form, never a URL. A clean stop removes the file; a crash can leave a
-**now unusable** token file and lock. Stop/verify the old process is gone, wait at
-least the lock stale timeout, and remove only `setup-token` before restarting.
-Do not delete `auth.sqlite` to recover a password. A stale file is never silently
-overwritten. Tokens expire after ten minutes and are held as hashes in memory.
+`node dist/index.js owner-auth --vault /absolute/path` creates one owner automatically
+if none exists. Optional `MCP_OWNER_USERNAME` and `MCP_OWNER_PASSWORD` apply only
+on that first creation; otherwise the publicly known `obsidian-admin` /
+`admin39145` credentials require immediate local rotation before OAuth or MCP
+vault access. Existing SQLite owners, credentials, IDs, and grants are not reset
+by ENV changes. Legacy email owners remain supported. There is no first-run
+setup token or registration endpoint. Do not delete `auth.sqlite` to reset a
+password; restore the entire directory from a consistent backup instead.
 
 Forgotten password: stop the owner service, then run `owner-auth --recover-owner`
 with the same vault/data location. Read the new protected token file and choose a
 new password in `/login`. This changes only the existing owner's password, revokes
 all sessions, and consumes the token atomically with respect to other requests.
+The recovery token expires after ten minutes; a crashed process can leave a stale
+`setup-token` file. Verify the old process is stopped, wait for the lock stale
+timeout, and remove only that stale token file before a new recovery attempt.
 No unauthenticated remote reset/signup/admin endpoint is mounted on the MCP listener.
 If `session.key` is lost, restore the matching backup; generating an unrelated key
 is not a supported recovery method.

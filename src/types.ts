@@ -38,6 +38,8 @@ export type AppConfig = {
   mcpOauthIssuer?: string;
   mcpAuthDirectory?: string;
   mcpOwnerPort?: number;
+  mcpOwnerUsername?: string;
+  mcpOwnerPassword?: string;
   mcpVaultId?: string;
   mcpAllowUnauthenticatedNetwork?: boolean;
   mcpRateLimitRpm?: number;

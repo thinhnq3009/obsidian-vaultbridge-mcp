@@ -19,7 +19,9 @@ export function ownerOptions(env: NodeJS.ProcessEnv, argv: string[]) {
     MCP_AUTH_LOGIN_MAX_FAILURES: z.coerce.number().int().min(1).max(20).default(5),
     MCP_AUTH_LOGIN_WINDOW_SECONDS: z.coerce.number().int().min(1).max(86400).default(900),
   }).parse(merged);
-  return { port: parsed.MCP_OWNER_PORT, maxFailures: parsed.MCP_AUTH_LOGIN_MAX_FAILURES, windowSeconds: parsed.MCP_AUTH_LOGIN_WINDOW_SECONDS, recover: argv.includes("--recover-owner") };
+  return { port: parsed.MCP_OWNER_PORT, maxFailures: parsed.MCP_AUTH_LOGIN_MAX_FAILURES, windowSeconds: parsed.MCP_AUTH_LOGIN_WINDOW_SECONDS, recover: argv.includes("--recover-owner"),
+    ...(env.MCP_OWNER_USERNAME !== undefined ? { ownerUsername: env.MCP_OWNER_USERNAME } : {}),
+    ...(env.MCP_OWNER_PASSWORD !== undefined ? { ownerPassword: env.MCP_OWNER_PASSWORD } : {}) };
 }
 
 export async function runOwnerCommand(argv: string[]): Promise<void> {
@@ -35,7 +37,7 @@ export async function runOwnerCommand(argv: string[]): Promise<void> {
   const service = await startOwnerServer({ ...options, vaultPath: config.vaultPath,
     directory: config.mcpAuthDirectory ?? authDataDirectory(process.platform, env) });
   process.stderr.write(`[vaultbridge] Local owner UI: ${service.origin}/login\n`);
-  if (service.tokenPath) process.stderr.write(`[vaultbridge] One-time ${options.recover ? "recovery" : "setup"} token file: ${service.tokenPath} (expires in 10 minutes; do not share)\n`);
+  if (service.tokenPath) process.stderr.write(`[vaultbridge] One-time recovery token file: ${service.tokenPath} (expires in 10 minutes; do not share)\n`);
   let closing = false;
   const shutdown = () => {
     if (closing) return;

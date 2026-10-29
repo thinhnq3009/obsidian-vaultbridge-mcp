@@ -14,10 +14,16 @@ import { assertVerifiedPrincipal, type VerifiedPrincipal } from "./oauth.js";
 import { createRequestBackend } from "../backend/authorized.js";
 import type { VaultBackend } from "../backend/types.js";
 
-const credentials = z.object({ email: z.email().max(254).transform((email) => email.trim().toLowerCase()), password: z.string().min(12).max(128) }).strict();
-const recoveryPassword = z.object({ password: z.string().min(12).max(128) }).strict();
+const DEFAULT_USERNAME = "obsidian-admin";
+const DEFAULT_PASSWORD = "admin39145";
+const usernameSchema = z.string().min(3).max(64).regex(/^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)*$/u);
+function strongPassword(password: string): boolean {
+  return password.length >= 12 && password.length <= 128
+    && [/[a-z]/u, /[A-Z]/u, /[0-9]/u, /[^a-zA-Z0-9]/u].filter((pattern) => pattern.test(password)).length >= 3;
+}
+const recoveryPassword = z.object({ password: z.string().min(12).max(128).refine((value) => strongPassword(value) && value !== DEFAULT_PASSWORD) }).strict();
 
-export async function createOwnerAuth(options: { directory: string; vaultPath: string; origin: string; recover?: boolean; maxFailures?: number; windowSeconds?: number; oauth?: Omit<OAuthProviderOptions, "ownerOrigin">; requireOwner?: boolean }) {
+export async function createOwnerAuth(options: { directory: string; vaultPath: string; origin: string; ownerUsername?: string; ownerPassword?: string; recover?: boolean; maxFailures?: number; windowSeconds?: number; oauth?: Omit<OAuthProviderOptions, "ownerOrigin"> }) {
   const origin = new URL(options.origin);
   if (origin.origin !== options.origin || !["127.0.0.1", "[::1]", "localhost"].includes(origin.hostname) || !["http:", "https:"].includes(origin.protocol)) {
     throw new Error("Owner auth requires a canonical loopback origin");
@@ -29,7 +35,7 @@ export async function createOwnerAuth(options: { directory: string; vaultPath: s
   try {
     // Refuse a future custom schema before asking the provider to migrate anything.
     const hasMigrations = db.prepare("SELECT name FROM sqlite_master WHERE name='vaultbridge_migration'").get();
-    if (hasMigrations && Number(db.prepare("SELECT max(version) AS version FROM vaultbridge_migration").get()?.version) > 1) {
+    if (hasMigrations && Number(db.prepare("SELECT max(version) AS version FROM vaultbridge_migration").get()?.version) > 2) {
       throw new Error("Owner database is newer than this binary; restore a pre-upgrade backup");
     }
     const auth = betterAuth({
@@ -61,28 +67,52 @@ export async function createOwnerAuth(options: { directory: string; vaultPath: s
     if (!ownerId() && Number(db.prepare('SELECT count(*) AS count FROM "user"').get()?.count) !== 0) {
       throw new Error("Unclaimed auth users exist; restore a consistent database backup");
     }
-    if (options.requireOwner && !ownerId()) throw new Error("OAuth requires prior local owner-auth setup");
-    if (options.recover && !ownerId()) throw new Error("No owner exists to recover; run normal owner setup");
+    if (options.recover && !ownerId()) throw new Error("No owner exists to recover");
+    if (!ownerId()) {
+      const username = usernameSchema.parse(options.ownerUsername ?? DEFAULT_USERNAME);
+      const email = `${username}@owner.vaultbridge.example`;
+      if (!z.email().safeParse(email).success) throw new Error("MCP_OWNER_USERNAME must produce a valid owner email address");
+      const password = options.ownerPassword ?? DEFAULT_PASSWORD;
+      if (password !== DEFAULT_PASSWORD && !strongPassword(password)) throw new Error("MCP_OWNER_PASSWORD must be a strong 12–128 character password");
+      const hash = await context.password.hash(password);
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        if (ownerId()) throw new Error("Owner already exists");
+        const user = await context.internalAdapter.createUser({
+          email, name: username, emailVerified: false,
+        }, { method: "email-password" });
+        await context.internalAdapter.linkAccount({ userId: user.id, providerId: "credential", accountId: user.id, password: hash });
+        db.prepare("INSERT INTO vaultbridge_owner (singleton, user_id, username, must_change_password) VALUES (1, ?, ?, ?)").run(user.id, username, password === DEFAULT_PASSWORD ? 1 : 0);
+        db.exec("COMMIT");
+      } catch (error) { db.exec("ROLLBACK"); throw error; }
+    }
     const tokenPath = path.join(options.directory, "setup-token");
     // Never overwrite an existing token file/symlink: a previous clean shutdown removes it.
     // A crashed process leaves an unusable token; the operator must remove it explicitly.
     let tokenHash: Buffer | undefined;
     let tokenExpires = 0;
-    if (!ownerId() || options.recover) {
+    if (options.recover) {
       const token = randomBytes(32).toString("base64url");
       fs.writeFileSync(tokenPath, token, { flag: "wx", mode: 0o600 });
       tokenHash = createHash("sha256").update(token).digest();
       tokenExpires = Date.now() + 10 * 60_000;
     }
     const budget = new LoginBudget(db, maxFailures, windowSeconds);
-    const verifyPrincipal = options.oauth ? principalVerifier(
+    const verifyActivePrincipal = options.oauth ? principalVerifier(
       (token) => auth.api.verifyVaultAccess({ body: { token } }),
       { ...options.oauth, ownerId },
     ) : undefined;
     // Also open the application-owned grant store during standalone recovery:
     // provider session deletion can detach opaque tokens' session references.
     const grants = new SqliteGrantStore(db);
-    let enrolling = false;
+    let changingPassword = false;
+    const mustChangePassword = () => db.prepare("SELECT must_change_password FROM vaultbridge_owner WHERE singleton=1").get()?.must_change_password !== 0;
+    const ownerUsername = () => db.prepare("SELECT username FROM vaultbridge_owner WHERE singleton=1").get()?.username;
+    const verifyPrincipal = verifyActivePrincipal ? async (authorization: string | undefined) => {
+      if (mustChangePassword()) throw authorizationDenied();
+      return verifyActivePrincipal(authorization);
+    } : undefined;
+    let recovering = false;
     function consumeToken() {
       tokenHash = undefined;
       fs.rmSync(tokenPath, { force: true });
@@ -91,9 +121,10 @@ export async function createOwnerAuth(options: { directory: string; vaultPath: s
       tokenPath: tokenHash ? tokenPath : undefined,
       recovering: options.recover === true,
       hasOwner: () => Boolean(ownerId()),
+      mustChangePassword,
       verifyPrincipal,
       backendForPrincipal(backend: VaultBackend, principal: VerifiedPrincipal, authorization: string): VaultBackend {
-        if (!options.oauth || !grants || !verifyPrincipal) throw authorizationDenied();
+        if (mustChangePassword() || !options.oauth || !grants || !verifyPrincipal) throw authorizationDenied();
         assertVerifiedPrincipal(principal);
         const grant = grants.resolve(principal.principalId, principal.clientId, options.oauth.vaultId, options.oauth.resource);
         if (!grant) throw authorizationDenied();
@@ -120,18 +151,19 @@ export async function createOwnerAuth(options: { directory: string; vaultPath: s
           "/api/auth/oauth2/authorize",
         ] : request.method === "POST" ? ["/api/auth/oauth2/token", "/api/auth/oauth2/revoke"] : [];
         if (!allowed.includes(url.pathname)) return Response.json({ error: "Not found" }, { status: 404 });
+        if (mustChangePassword() && !url.pathname.includes(".well-known")) return Response.json({ error: "Password change required" }, { status: 403 });
         const headers = new Headers(request.headers);
         // Public requests never authenticate as the owner using cookies.
         for (const name of ["cookie", "forwarded", "x-forwarded-for", "x-real-ip"]) headers.delete(name);
         headers.set("x-vaultbridge-peer-ip", peer);
         return auth.handler(new Request(request, { headers }));
       },
-      async enroll(input: unknown, token: string): Promise<boolean> {
-        const parsed = options.recover ? recoveryPassword.safeParse(input) : credentials.safeParse(input);
-        if (!parsed.success || enrolling || !tokenHash || Date.now() >= tokenExpires) return false;
+      async recoverPassword(input: unknown, token: string): Promise<boolean> {
+        const parsed = recoveryPassword.safeParse(input);
+        if (!parsed.success || recovering || !tokenHash || Date.now() >= tokenExpires) return false;
         const digest = createHash("sha256").update(token).digest();
         if (!timingSafeEqual(digest, tokenHash)) return false;
-        enrolling = true;
+        recovering = true;
         try {
           const hash = await context.password.hash(parsed.data.password);
           db.exec("BEGIN IMMEDIATE");
@@ -141,24 +173,20 @@ export async function createOwnerAuth(options: { directory: string; vaultPath: s
               grants.revokePrincipal(existing);
               await context.internalAdapter.updatePassword(existing, hash);
               await context.internalAdapter.deleteUserSessions(existing);
-            } else {
-              if (existing || !("email" in parsed.data) || typeof parsed.data.email !== "string") throw new Error("Owner already enrolled");
-              const user = await context.internalAdapter.createUser({ email: parsed.data.email, name: "Owner", emailVerified: false }, { method: "email-password" });
-              await context.internalAdapter.linkAccount({ userId: user.id, providerId: "credential", accountId: user.id, password: hash });
-              db.prepare("INSERT INTO vaultbridge_owner VALUES (1, ?)").run(user.id);
-            }
+              db.prepare("UPDATE vaultbridge_owner SET must_change_password=0 WHERE singleton=1").run();
+            } else throw new Error("Recovery owner missing");
             db.exec("COMMIT");
           } catch (error) { db.exec("ROLLBACK"); throw error; }
           consumeToken();
           return true;
-        } finally { enrolling = false; }
+        } finally { recovering = false; }
       },
       async handle(request: Request, peer: string): Promise<Response> {
         if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(peer)
           || (request.method === "POST" && (request.headers.get("origin") !== options.origin || request.headers.get("x-vaultbridge-csrf") !== "1"))) {
           return Response.json({ error: "Forbidden" }, { status: 403 });
         }
-        if (!ownerId() || enrolling || (options.recover && tokenHash)) return Response.json({ error: "Owner setup required" }, { status: 503 });
+        if (!ownerId() || recovering || (options.recover && tokenHash)) return Response.json({ error: "Owner unavailable" }, { status: 503 });
         const url = new URL(request.url);
         const headers = new Headers(request.headers);
         headers.set("x-vaultbridge-peer-ip", peer);
@@ -167,23 +195,61 @@ export async function createOwnerAuth(options: { directory: string; vaultPath: s
         const forwarded = new Request(request, { headers });
         if (url.pathname === "/api/auth/sign-in/email" && request.method === "POST") {
           const body: unknown = await forwarded.clone().json();
-          const parsed = z.object({ email: z.email().max(254), password: z.string().min(1).max(128) }).strict().safeParse(body);
+          const parsed = z.union([
+            z.object({ username: z.string().min(1).max(254), password: z.string().min(1).max(128) }).strict(),
+            z.object({ email: z.email().max(254), password: z.string().min(1).max(128) }).strict(),
+          ]).safeParse(body);
           if (!parsed.success) return Response.json({ error: "Invalid credentials" }, { status: 401 });
-          const email = parsed.data.email.trim().toLowerCase();
-          const retry = budget.reserve(email, peer);
+          const identifier = ("username" in parsed.data ? parsed.data.username : parsed.data.email).trim().toLowerCase();
+          const storedUsername = ownerUsername();
+          const email = storedUsername === null ? identifier : `${identifier}@owner.vaultbridge.example`;
+          const retry = budget.reserve(identifier, peer);
           if (retry) return Response.json({ error: "Try again later" }, { status: 429, headers: { "Retry-After": String(retry) } });
           let success = false;
           try {
-            const result = await auth.handler(forwarded);
+            // The synthetic provider email is never a second login identifier.
+            if (storedUsername !== null
+              ? !("username" in parsed.data) || identifier !== storedUsername
+              : !z.email().safeParse(identifier).success) return Response.json({ error: "Invalid credentials" }, { status: 401 });
+            const login = new Request(forwarded, { body: JSON.stringify({ email, password: parsed.data.password }) });
+            const result = await auth.handler(login);
             success = result.ok;
             // Do not expose a session token in JSON; browsers receive only the HttpOnly cookie.
             if (success) return new Response('{"success":true}', { status: 200, headers: result.headers });
             if (result.status === 429) return new Response('{"error":"Try again later"}', { status: 429, headers: { "Retry-After": result.headers.get("x-retry-after") ?? "60" } });
             return Response.json({ error: "Invalid credentials" }, { status: 401 });
-          } finally { budget.finish(email, peer, success); }
+          } finally { budget.finish(identifier, peer, success); }
         }
         const session = await auth.api.getSession({ headers });
         if (!session || session.user.id !== ownerId()) return Response.json({ error: "Unauthorized" }, { status: 401 });
+        if (url.pathname === "/api/auth/change-password" && request.method === "POST") {
+          const body = z.object({ currentPassword: z.string().min(1).max(128), newPassword: z.string().min(12).max(128) }).strict().safeParse(await forwarded.json());
+          if (!body.success || !strongPassword(body.data.newPassword) || body.data.newPassword === DEFAULT_PASSWORD) return Response.json({ error: "Invalid password" }, { status: 400 });
+          if (changingPassword) return Response.json({ error: "Password change in progress" }, { status: 409 });
+          const retry = budget.reserve(session.user.id, peer);
+          if (retry) return Response.json({ error: "Try again later" }, { status: 429, headers: { "Retry-After": String(retry) } });
+          changingPassword = true;
+          let success = false;
+          try {
+            const account = await context.internalAdapter.findCredentialAccount(session.user.id);
+            if (!account?.password || !await context.password.verify({ hash: account.password, password: body.data.currentPassword })
+              || body.data.currentPassword === body.data.newPassword) return Response.json({ error: "Invalid password" }, { status: 400 });
+            const hash = await context.password.hash(body.data.newPassword);
+            db.exec("BEGIN IMMEDIATE");
+            try {
+              await context.internalAdapter.updatePassword(session.user.id, hash);
+              grants.revokePrincipal(session.user.id);
+              await context.internalAdapter.deleteUserSessions(session.user.id);
+              db.prepare("UPDATE vaultbridge_owner SET must_change_password=0 WHERE singleton=1").run();
+              db.exec("COMMIT");
+            } catch (error) { db.exec("ROLLBACK"); throw error; }
+            success = true;
+            return Response.json({ success: true });
+          } finally { changingPassword = false; budget.finish(session.user.id, peer, success); }
+        }
+        if (mustChangePassword() && (url.pathname.startsWith("/oauth/") || url.pathname === "/api/auth/revoke-sessions")) {
+          return Response.json({ error: "Password change required" }, { status: 403 });
+        }
         if (options.oauth && grants) {
           if (url.pathname === "/oauth/grants" && request.method === "GET") return Response.json({
             vaultId: options.oauth.vaultId, resource: options.oauth.resource,
@@ -235,7 +301,7 @@ export async function createOwnerAuth(options: { directory: string; vaultPath: s
           }));
         }
         if (url.pathname === "/api/auth/get-session" && request.method === "GET") {
-          return Response.json({ email: session.user.email, expiresAt: session.session.expiresAt });
+          return Response.json({ username: ownerUsername() ?? session.user.email, mustChangePassword: mustChangePassword(), expiresAt: session.session.expiresAt });
         }
         if (url.pathname === "/api/auth/revoke-sessions" && request.method === "POST") {
           grants.revokePrincipal(session.user.id);

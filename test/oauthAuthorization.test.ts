@@ -31,8 +31,8 @@ afterEach(async () => {
   for (const client of clients.splice(0)) await client.close();
   for (const harness of running.splice(0)) await harness.close();
 });
-async function setup() {
-  const h = await oauthHarness(); running.push(h);
+async function setup(bootstrapDefault = false) {
+  const h = await oauthHarness({}, bootstrapDefault); running.push(h);
   for (const folder of ["Notes", "Other", "Secret"]) {
     await fs.mkdir(path.join(h.vault, folder));
     await fs.writeFile(path.join(h.vault, folder, "A.md"), `shared marker ${folder} private-body`);
@@ -77,6 +77,14 @@ async function connect(h: Harness, token: string) {
 }
 
 describe("AUTH-004 live verified OAuth → SQLite grant → request backend → MCP", () => {
+  it("rotates the default owner password before a fresh login and scoped read-only OAuth MCP access", async () => {
+    const h = await setup(true);
+    const token = await provision(h, clientA, "Notes");
+    const client = await connect(h, token.access_token);
+    expect((await client.callTool({ name: "obsidian_read_note", arguments: { path: "Notes/A.md" } })).isError).not.toBe(true);
+    expect((await client.callTool({ name: "obsidian_read_note", arguments: { path: "Secret/A.md" } })).isError).toBe(true);
+    expect((await client.callTool({ name: "obsidian_write_note", arguments: { path: "Notes/Denied.md", content: "denied" } })).isError).toBe(true);
+  });
   it("drives the served owner login and consent UI through real HTTP to a usable scoped MCP token", async () => {
     const h = await setup();
     const pending = await h.consent();
@@ -114,7 +122,7 @@ describe("AUTH-004 live verified OAuth → SQLite grant → request backend → 
       dom.window.eval(script);
       await vi.waitFor(() => expect(document.getElementById("login")!.hidden).toBe(false));
       const form = document.getElementById("login-form") as HTMLFormElement;
-      (form.elements.namedItem("email") as HTMLInputElement).value = "owner@example.test";
+      (form.elements.namedItem("username") as HTMLInputElement).value = "owner@example.test";
       (form.elements.namedItem("password") as HTMLInputElement).value = password;
       form.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
       await vi.waitFor(() => expect(document.getElementById("oauth")!.hidden).toBe(false), { timeout: 10000 });
