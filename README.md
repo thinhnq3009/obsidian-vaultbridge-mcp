@@ -393,18 +393,27 @@ node dist/index.js owner-auth --vault /absolute/path/to/test-vault
 obsidian-vaultbridge-mcp owner-auth --vault /absolute/path/to/vault
 ```
 
-Open the exact `http://127.0.0.1:39146/login` address printed on stderr. First-run
-setup requires a random, one-time token read from the **protected file path**
-printed by the CLI; the token itself is never logged or placed in a URL. It expires
-in ten minutes. Choose an email and a 12–128 character password. No default
-password, public signup, or email-reset route exists. `/admin` displays the current
-account/session expiry and offers logout and **revoke all sessions**. Neither page
-grants MCP access. A forgotten password requires stopping the owner service and
-running the same command with `--recover-owner`; the local recovery token permits
-replacing the existing owner's password and revokes every session. Login is paused
-until recovery finishes. The owner email is not changed by recovery.
+Open the exact `http://127.0.0.1:39146/login` address printed on stderr. The first
+owner is created automatically in the private SQLite auth directory when `owner-auth`
+or explicit OAuth starts. Set `MCP_OWNER_USERNAME` and `MCP_OWNER_PASSWORD` in an
+untracked `.env` before first start. Username is a 3–64 character lowercase
+identifier beginning with a letter and containing only letters, digits, `.`, `_`
+or `-`; it is not an email. Existing email-based owners continue to sign in using
+their email. A custom password
+must be 12–128 characters and contain at least three of lowercase, uppercase, digits,
+and symbols. If omitted, the defaults are **`obsidian-admin` / `admin39145`**.
+This publicly known password is unsafe: the owner must change it in the local
+`/admin` UI before OAuth grants, consent, tokens, or MCP vault access can work.
+The default password is a one-time bootstrap exception, not a valid new password.
+Changes to the ENV after creation never reset the existing owner or credentials.
+No first-run registration or public signup/reset endpoint exists. The owner-only
+change-password form requires the current password, a live session, exact loopback
+Host/Origin and a CSRF header. Success revokes all owner sessions and local grants,
+requires fresh login and explicit regranting; it **does not** fix upstream refresh
+family revocation (#60). A forgotten password requires offline `--recover-owner`
+with a protected ten-minute recovery token; the owner login identifier is unchanged.
 
-Normal MCP startup does not create an account/database. In particular anonymous
+Normal STDIO/token/none MCP startup does not create an account/database. In particular anonymous
 local usage does not require setup. `MCP_AUTH_MODE=none` rejects the explicit
 `owner-auth` command before opening storage; omit that command for anonymous use.
 No new network-anonymous or OAuth mode is enabled by this change.
@@ -415,6 +424,8 @@ Configuration precedence for the owner command: **CLI > ENV > working-directory
 | Setting | CLI | Default / bounds |
 | --- | --- | --- |
 | `MCP_OWNER_PORT` | `--owner-port` | 39146; 1–65535, always 127.0.0.1 |
+| `MCP_OWNER_USERNAME` | — | `obsidian-admin`, first owner creation only |
+| `MCP_OWNER_PASSWORD` | — | `admin39145` (unsafe; mandatory rotation), first owner creation only |
 | `MCP_AUTH_LOGIN_MAX_FAILURES` | `--auth-login-max-failures` | 5; 1–20 |
 | `MCP_AUTH_LOGIN_WINDOW_SECONDS` | `--auth-login-window-seconds` | 900; 1–86400 |
 

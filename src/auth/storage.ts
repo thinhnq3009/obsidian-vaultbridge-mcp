@@ -99,11 +99,15 @@ export async function openAuthStorage(directory: string, vaultPath: string) {
 export function migrateOwnerSchema(db: DatabaseSync): void {
   db.exec("CREATE TABLE IF NOT EXISTS vaultbridge_migration (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
   const latest = db.prepare("SELECT max(version) AS version FROM vaultbridge_migration").get()?.version;
-  if (typeof latest === "number" && latest > 1) throw new Error("Owner database is newer than this binary; restore a pre-upgrade backup to roll back");
-  if (latest === 1) return;
-  db.exec(`BEGIN IMMEDIATE;
+  if (typeof latest === "number" && latest > 2) throw new Error("Owner database is newer than this binary; restore a pre-upgrade backup to roll back");
+  if (latest === undefined || latest === null) db.exec(`BEGIN IMMEDIATE;
     CREATE TABLE vaultbridge_owner (singleton INTEGER PRIMARY KEY CHECK(singleton=1), user_id TEXT NOT NULL UNIQUE REFERENCES user(id));
     CREATE TABLE vaultbridge_login_budget (key TEXT PRIMARY KEY, failures INTEGER NOT NULL, expires INTEGER NOT NULL, next_allowed INTEGER NOT NULL);
     INSERT INTO vaultbridge_migration VALUES (1, datetime('now'));
+    COMMIT;`);
+  if (latest !== 2) db.exec(`BEGIN IMMEDIATE;
+    ALTER TABLE vaultbridge_owner ADD COLUMN username TEXT;
+    ALTER TABLE vaultbridge_owner ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0 CHECK(must_change_password IN (0, 1));
+    INSERT INTO vaultbridge_migration VALUES (2, datetime('now'));
     COMMIT;`);
 }

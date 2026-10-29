@@ -13,7 +13,9 @@ a migration warning), otherwise legacy `none` (with an exposure warning).
 are startup errors, never fallback credentials.
 
 1. Stop the MCP process. Run `owner-auth --vault /absolute/disposable-vault`
-   to enroll the owner using the existing protected setup-token workflow.
+   to automatically bootstrap the owner (set `MCP_OWNER_USERNAME` and a strong
+   `MCP_OWNER_PASSWORD` before first start). The public fallback password requires
+   local rotation before OAuth consent, grants or MCP vault access.
    If runtime uses a custom `MCP_AUTH_DIRECTORY`, use that same environment
    variable or `--auth-directory /absolute/private/app-data` during setup and
    recovery; CLI takes precedence. Never bootstrap a different database.

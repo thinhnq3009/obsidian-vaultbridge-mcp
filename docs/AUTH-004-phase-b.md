@@ -101,7 +101,7 @@ used for both commands:
 npm ci
 npm run build
 
-# First enroll the owner via the printed loopback UI and setup-token file.
+# Owner is created automatically on first owner-auth or OAuth startup.
 # --stdio prevents unrelated HTTP deployment settings from affecting setup.
 npm start -- owner-auth --stdio --vault /absolute/test-vault \
   --auth-directory /absolute/private/auth-data --owner-port 39146

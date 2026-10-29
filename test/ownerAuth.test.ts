@@ -39,7 +39,13 @@ afterEach(async () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 async function start(extra: { recover?: boolean; maxFailures?: number; windowSeconds?: number } = {}) {
-  service = await startOwnerServer({ directory, vaultPath, port: 0, ...extra });
+  service = await startOwnerServer({ directory, vaultPath, port: 0, ownerPassword: password, ...extra });
+  if (!extra.recover) {
+    const db = new DatabaseSync(path.join(directory, "auth.sqlite"));
+    db.prepare('UPDATE "user" SET email=?').run(email);
+    db.prepare("UPDATE vaultbridge_owner SET username=NULL").run();
+    db.close();
+  }
   return service;
 }
 async function post(route: string, body: unknown, headers: Record<string, string> = {}) {
@@ -47,11 +53,8 @@ async function post(route: string, body: unknown, headers: Record<string, string
     method: "POST", headers: { "Content-Type": "application/json", Origin: service!.origin, "X-VaultBridge-CSRF": "1", ...headers }, body: JSON.stringify(body),
   });
 }
-async function enroll() {
-  return post("/setup", { token: fs.readFileSync(service!.tokenPath!, "utf8"), email, password });
-}
 async function login() {
-  const response = await post("/api/auth/sign-in/email", { email, password });
+  const response = await post("/api/auth/sign-in/email", { username: email, password });
   expect(response.status).toBe(200);
   const cookies = response.headers.getSetCookie().map((cookie) => cookie.split(";")[0]!).join("; ");
   expect(cookies).toContain("session_token=");
@@ -59,6 +62,60 @@ async function login() {
 }
 
 describe("local owner HTTP lifecycle", () => {
+  it("automatically bootstraps the public default once, blocks OAuth and rotates through loopback only", async () => {
+    service = await startOwnerServer({
+      directory, vaultPath, port: 0,
+      oauth: { issuer: "https://vault.example/api/auth", resource: "https://vault.example/mcp", vaultId: "vault" },
+    });
+    expect(service.tokenPath).toBeUndefined();
+    expect(fs.existsSync(path.join(directory, "setup-token"))).toBe(false);
+    expect(fs.existsSync(path.join(vaultPath, "auth.sqlite"))).toBe(false);
+    const db = new DatabaseSync(path.join(directory, "auth.sqlite"));
+    expect(db.prepare('SELECT count(*) AS n FROM "user"').get()?.n).toBe(1);
+    expect(db.prepare("SELECT must_change_password FROM vaultbridge_owner").get()?.must_change_password).toBe(1);
+    const initial = await post("/api/auth/sign-in/email", { username: "obsidian-admin", password: "admin39145" });
+    expect(initial.status).toBe(200);
+    const cookie = initial.headers.getSetCookie().map((item) => item.split(";")[0]).join("; ");
+    const state = await (await fetch(`${service.origin}/api/auth/get-session`, { headers: { cookie } })).json() as { mustChangePassword: boolean };
+    expect(state.mustChangePassword).toBe(true);
+    expect((await post("/oauth/grants", {}, { cookie })).status).toBe(403);
+    expect((await post("/oauth/consent", {}, { cookie })).status).toBe(403);
+    expect((await service.owner.handleOAuth(new Request("https://vault.example/api/auth/oauth2/token", { method: "POST" }), "127.0.0.1")).status).toBe(403);
+    await expect(service.owner.verifyPrincipal!("Bearer fake")).rejects.toThrow();
+    expect((await post("/setup", { token: "x", password })).status).toBe(404);
+    expect((await post("/recover-owner", { token: "x", password })).status).toBe(404);
+    for (const headers of [{ Origin: "https://evil.example" }, { "X-VaultBridge-CSRF": "" }]) {
+      expect((await post("/api/auth/change-password", { currentPassword: "admin39145", newPassword: password }, { cookie, ...headers })).status).toBe(403);
+    }
+    expect((await post("/api/auth/change-password", { currentPassword: "wrong", newPassword: password }, { cookie })).status).toBe(400);
+    expect((await post("/api/auth/change-password", { currentPassword: "admin39145", newPassword: "short" }, { cookie })).status).toBe(400);
+    // Wrong-current backoff expires independently; exercise a fresh session's successful rotation.
+    db.exec("DELETE FROM vaultbridge_login_budget");
+    expect((await post("/api/auth/change-password", { currentPassword: "admin39145", newPassword: password }, { cookie })).status).toBe(200);
+    expect(db.prepare("SELECT must_change_password FROM vaultbridge_owner").get()?.must_change_password).toBe(0);
+    expect((await fetch(`${service.origin}/api/auth/get-session`, { headers: { cookie } })).status).toBe(401);
+    expect((await post("/api/auth/sign-in/email", { username: "obsidian-admin", password: "admin39145" })).status).toBe(401);
+    db.close();
+    await service.close(); service = undefined;
+    service = await startOwnerServer({ directory, vaultPath, port: 0, ownerUsername: "other-owner", ownerPassword: "Different-Password-456!" });
+    await setTimeout(1100); // Failed old-password attempt retains a persistent peer backoff.
+    const fresh = await post("/api/auth/sign-in/email", { username: "obsidian-admin", password });
+    expect(fresh.status).toBe(200);
+    expect((await post("/api/auth/sign-in/email", { username: "other-owner", password: "Different-Password-456!" })).status).not.toBe(200);
+    expect((await post("/api/auth/sign-in/email", { username: "obsidian-admin@owner.vaultbridge.example", password })).status).not.toBe(200);
+  });
+
+  it("uses custom ENV credentials only at first creation and rejects weak custom passwords", async () => {
+    await expect(startOwnerServer({ directory, vaultPath, port: 0, ownerPassword: "too-short" })).rejects.toThrow("strong");
+    service = await startOwnerServer({ directory, vaultPath, port: 0, ownerUsername: "my-owner", ownerPassword: password });
+    expect((await post("/api/auth/sign-in/email", { username: "my-owner", password })).status).toBe(200);
+    expect(service.owner.mustChangePassword()).toBe(false);
+    await service.close(); service = undefined;
+    service = await startOwnerServer({ directory, vaultPath, port: 0, ownerUsername: "changed", ownerPassword: "weak" });
+    expect((await post("/api/auth/sign-in/email", { username: "my-owner", password })).status).toBe(200);
+    expect((await post("/api/auth/sign-in/email", { username: "changed", password: "weak" })).status).toBe(401);
+  });
+
   it("allows only safe top-level OAuth login/consent navigation from a different site", async () => {
     await start();
     const navigation = { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" };
@@ -92,10 +149,8 @@ describe("local owner HTTP lifecycle", () => {
   });
   it("bootstraps once, hashes passwords, persists WAL/users/key/session across restart, logs out", async () => {
     await start();
-    const token = fs.readFileSync(service!.tokenPath!, "utf8");
-    expect((await enroll()).status).toBe(200);
-    expect(fs.existsSync(service!.tokenPath!)).toBe(false);
-    expect((await post("/setup", { token, email, password })).status).toBe(400);
+    expect(service!.tokenPath).toBeUndefined();
+    expect((await post("/setup", { token: "invalid", password })).status).toBe(404);
     const { response, cookies } = await login();
     expect(await response.json()).toEqual({ success: true });
     const setCookie = response.headers.getSetCookie().join(";");
@@ -109,7 +164,7 @@ describe("local owner HTTP lifecycle", () => {
     expect(typeof hash).toBe("string");
     expect(hash).not.toBe(password);
     expect(String(hash)).not.toContain(password);
-    expect(db.prepare("SELECT count(*) AS n FROM vaultbridge_migration").get()?.n).toBe(1);
+    expect(db.prepare("SELECT count(*) AS n FROM vaultbridge_migration").get()?.n).toBe(2);
     db.close();
     await service!.close(); service = undefined;
     await start();
@@ -122,11 +177,10 @@ describe("local owner HTTP lifecycle", () => {
 
   it("rejects expired/tampered sessions and sets Secure for an HTTPS origin", async () => {
     const origin = "https://127.0.0.1:39146";
-    const auth = await createOwnerAuth({ directory, vaultPath, origin });
+    const auth = await createOwnerAuth({ directory, vaultPath, origin, ownerPassword: password });
     try {
-      expect(await auth.enroll({ email, password }, fs.readFileSync(auth.tokenPath!, "utf8"))).toBe(true);
       const response = await auth.handle(new Request(`${origin}/api/auth/sign-in/email`, {
-        method: "POST", headers: { origin, "content-type": "application/json", "x-vaultbridge-csrf": "1" }, body: JSON.stringify({ email, password }),
+        method: "POST", headers: { origin, "content-type": "application/json", "x-vaultbridge-csrf": "1" }, body: JSON.stringify({ username: "obsidian-admin", password }),
       }), "127.0.0.1");
       expect(response.status).toBe(200);
       expect(response.headers.getSetCookie().join(";")).toMatch(/; Secure/iu);
@@ -140,13 +194,11 @@ describe("local owner HTTP lifecycle", () => {
 
   it("denies missing/incorrect tokens, parallel bootstrap and public account creation", async () => {
     await start();
-    expect((await post("/setup", { token: "wrong", email, password })).status).toBe(400);
-    expect((await post("/setup", { token: "wrong", email, password: "short" })).status).toBe(400);
-    const results = await Promise.all([enroll(), enroll()]);
-    expect(results.map((result) => result.status).sort()).toEqual([200, 400]);
+    expect((await post("/setup", { token: "wrong", password })).status).toBe(404);
+    expect((await post("/setup", { token: "wrong", password: "short" })).status).toBe(404);
     const { cookies } = await login();
     for (const route of ["sign-up/email", "request-password-reset", "reset-password", "update-user", "change-password"]) {
-      expect((await post(`/api/auth/${route}`, { email, password }, { cookie: cookies })).status).toBe(404);
+      expect((await post(`/api/auth/${route}`, { username: email, password }, { cookie: cookies })).status).toBe(route === "change-password" ? 400 : 404);
     }
     const db = new DatabaseSync(path.join(directory, "auth.sqlite"));
     expect(db.prepare('SELECT count(*) AS n FROM "user"').get()?.n).toBe(1);
@@ -169,46 +221,84 @@ describe("local owner HTTP lifecycle", () => {
   });
 
   it("revokes every session and supports local token recovery without public password resets", async () => {
-    await start(); await enroll();
+    await start();
     const first = (await login()).cookies;
     const second = (await login()).cookies;
     expect((await post("/api/auth/revoke-sessions", {}, { cookie: first })).status).toBe(200);
     for (const cookie of [first, second]) expect((await fetch(`${service!.origin}/api/auth/get-session`, { headers: { cookie } })).status).toBe(401);
   });
 
+  it("changes a legacy email owner's password without changing its principal, and revokes every session", async () => {
+    await start();
+    const oldLogin = await post("/api/auth/sign-in/email", { email, password });
+    expect(oldLogin.status).toBe(200);
+    const first = oldLogin.headers.getSetCookie().map((item) => item.split(";")[0]).join("; ");
+    const second = (await login()).cookies;
+    const db = new DatabaseSync(path.join(directory, "auth.sqlite"));
+    const principal = db.prepare("SELECT user_id FROM vaultbridge_owner").get()?.user_id;
+    const changed = await post("/api/auth/change-password", { currentPassword: password, newPassword: "Legacy-Rotated-Password-123!" }, { cookie: first });
+    expect(changed.status).toBe(200);
+    expect(db.prepare("SELECT user_id FROM vaultbridge_owner").get()?.user_id).toBe(principal);
+    for (const cookie of [first, second]) expect((await fetch(`${service!.origin}/api/auth/get-session`, { headers: { cookie } })).status).toBe(401);
+    expect((await post("/api/auth/sign-in/email", { username: email, password: "Legacy-Rotated-Password-123!" })).status).toBe(200);
+    db.close();
+  });
+
+  it("migrates an existing version-1 email owner without replacing credentials or principal", async () => {
+    await start();
+    await service!.close(); service = undefined;
+    const db = new DatabaseSync(path.join(directory, "auth.sqlite"));
+    const principal = db.prepare("SELECT user_id FROM vaultbridge_owner").get()?.user_id;
+    db.exec(`BEGIN IMMEDIATE;
+      CREATE TABLE old_owner (singleton INTEGER PRIMARY KEY CHECK(singleton=1), user_id TEXT NOT NULL UNIQUE REFERENCES user(id));
+      INSERT INTO old_owner SELECT singleton, user_id FROM vaultbridge_owner;
+      DROP TABLE vaultbridge_owner;
+      ALTER TABLE old_owner RENAME TO vaultbridge_owner;
+      DELETE FROM vaultbridge_migration WHERE version=2;
+      COMMIT;`);
+    db.close();
+    service = await startOwnerServer({ directory, vaultPath, port: 0, ownerUsername: "new-owner", ownerPassword: "Wrong-Override-Password-123!" });
+    const after = new DatabaseSync(path.join(directory, "auth.sqlite"));
+    expect(after.prepare("SELECT user_id, username, must_change_password FROM vaultbridge_owner").get()).toMatchObject({
+      user_id: principal, username: null, must_change_password: 0,
+    });
+    after.close();
+    expect((await login()).response.status).toBe(200);
+  });
+
   it("recovers the password locally and invalidates existing sessions", async () => {
-    await start(); await enroll();
+    await start();
     const beforeRecovery = (await login()).cookies;
     await service!.close(); service = undefined;
     await start({ recover: true });
-    expect((await post("/setup", { token: fs.readFileSync(service!.tokenPath!, "utf8"), password: `${password}-new` })).status).toBe(200);
+    expect((await post("/recover-owner", { token: fs.readFileSync(service!.tokenPath!, "utf8"), password: `${password}-new` })).status).toBe(200);
     expect((await fetch(`${service!.origin}/api/auth/get-session`, { headers: { cookie: beforeRecovery } })).status).toBe(401);
-    expect((await post("/api/auth/sign-in/email", { email, password: `${password}-new` })).status).toBe(200);
+    expect((await post("/api/auth/sign-in/email", { username: email, password: `${password}-new` })).status).toBe(200);
   });
 
   it("enforces persistent failure/backoff despite spoofed peer headers and concurrent login floods", async () => {
-    await start({ maxFailures: 2 }); await enroll();
+    await start({ maxFailures: 2 });
     const headers = { "X-Forwarded-For": "192.0.2.1", "X-Real-IP": "192.0.2.2", "X-VaultBridge-Peer-IP": "192.0.2.3" };
-    expect((await post("/api/auth/sign-in/email", { email, password: "bad" }, headers)).status).toBe(401);
-    const limited = await post("/api/auth/sign-in/email", { email: email.toUpperCase(), password: "bad" }, { "X-Forwarded-For": "192.0.2.4" });
+    expect((await post("/api/auth/sign-in/email", { username: email, password: "bad" }, headers)).status).toBe(401);
+    const limited = await post("/api/auth/sign-in/email", { username: email.toUpperCase(), password: "bad" }, { "X-Forwarded-For": "192.0.2.4" });
     expect(limited.status).toBe(429);
     expect(Number(limited.headers.get("Retry-After"))).toBeGreaterThan(0);
     await service!.close(); service = undefined;
     await start({ maxFailures: 2 });
-    expect((await post("/api/auth/sign-in/email", { email, password })).status).toBe(429);
-    const results = await Promise.all(Array.from({ length: 10 }, () => post("/api/auth/sign-in/email", { email: "other@example.test", password: "bad" })));
+    expect((await post("/api/auth/sign-in/email", { username: email, password })).status).toBe(429);
+    const results = await Promise.all(Array.from({ length: 10 }, () => post("/api/auth/sign-in/email", { username: "other@example.test", password: "bad" })));
     expect(results.filter((result) => result.status === 401).length).toBeLessThanOrEqual(2);
     expect(results.some((result) => result.status === 429)).toBe(true);
   });
 
   it("returns generic login errors and disallows callback redirects", async () => {
-    await start(); await enroll();
-    const missing = await post("/api/auth/sign-in/email", { email: "missing@example.test", password: "bad" });
+    await start();
+    const missing = await post("/api/auth/sign-in/email", { username: "missing@example.test", password: "bad" });
     await setTimeout(1100); // Peer-wide progressive backoff applies equally to every account.
-    const existing = await post("/api/auth/sign-in/email", { email, password: "bad" });
+    const existing = await post("/api/auth/sign-in/email", { username: email, password: "bad" });
     expect(missing.status).toBe(existing.status);
     expect(await missing.json()).toEqual(await existing.json());
-    expect((await post("/api/auth/sign-in/email", { email, password, callbackURL: "https://evil.test" })).status).toBe(401);
+    expect((await post("/api/auth/sign-in/email", { username: email, password, callbackURL: "https://evil.test" })).status).toBe(401);
   });
 
   it("serves a minimal non-inline UI with no-store/CSP, denies oversized/encoded/malformed bodies", async () => {
@@ -235,14 +325,14 @@ describe("local owner HTTP lifecycle", () => {
   });
 
   it("keeps the provider rate limiter enabled in test/development independently of password budgets", async () => {
-    await start({ maxFailures: 20 }); await enroll();
-    expect((await post("/api/auth/sign-in/email", { email, password: "bad" })).status).toBe(401);
+    await start({ maxFailures: 20 });
+    expect((await post("/api/auth/sign-in/email", { username: email, password: "bad" })).status).toBe(401);
     const db = new DatabaseSync(path.join(directory, "auth.sqlite"));
     expect(db.prepare('SELECT count(*) AS n FROM "rateLimit"').get()?.n).toBeGreaterThan(0);
     // Exhaust provider state while clearing only our separate failure/backoff state.
     db.exec('DELETE FROM vaultbridge_login_budget; UPDATE "rateLimit" SET count=999');
     db.close();
-    const response = await post("/api/auth/sign-in/email", { email: "missing@example.test", password: "bad" });
+    const response = await post("/api/auth/sign-in/email", { username: "missing@example.test", password: "bad" });
     expect(response.status).toBe(429);
     expect(response.headers.has("Retry-After")).toBe(true);
   });
@@ -260,7 +350,6 @@ describe("owner storage and guard contracts", () => {
     const env = { ...process.env, MCP_TRANSPORT: "stdio", MCP_AUTH_MODE: "token",
       MCP_AUTH_DIRECTORY: envDirectory, HOME: root, USERPROFILE: root,
       XDG_DATA_HOME: path.join(root, "default-data"), APPDATA: path.join(root, "default-data") };
-    const fallbackDirectory = authDataDirectory(process.platform, env, root);
     const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), path.resolve("src/index.ts"),
       "owner-auth", "--vault", vaultPath, "--stdio", "--owner-port", String(address.port),
       "--auth-directory", explicitDirectory], {
@@ -269,9 +358,8 @@ describe("owner storage and guard contracts", () => {
     });
     const exited = new Promise<void>((resolve, reject) => { child.once("error", reject); child.once("exit", () => { resolve(); }); });
     try {
-      await vi.waitFor(() => expect([explicitDirectory, fallbackDirectory].some((directory) =>
-        fs.existsSync(path.join(directory, "setup-token")))).toBe(true), { timeout: 15000 });
-      expect(fs.existsSync(path.join(explicitDirectory, "setup-token"))).toBe(true);
+      await vi.waitFor(() => expect(fs.existsSync(path.join(explicitDirectory, "auth.sqlite"))).toBe(true), { timeout: 15000 });
+      expect(fs.existsSync(path.join(explicitDirectory, "setup-token"))).toBe(false);
       expect(fs.existsSync(path.join(explicitDirectory, "auth.sqlite"))).toBe(true);
       expect(fs.existsSync(envDirectory)).toBe(false);
       expect(fs.existsSync(path.join(root, "default-data"))).toBe(false);
@@ -329,33 +417,35 @@ describe("owner storage and guard contracts", () => {
     await auth.close();
     const db = new DatabaseSync(path.join(directory, "auth.sqlite"));
     migrateOwnerSchema(db);
-    db.prepare("INSERT INTO vaultbridge_migration VALUES (2, datetime('now'))").run();
+    db.prepare("INSERT INTO vaultbridge_migration VALUES (3, datetime('now'))").run();
     expect(() => migrateOwnerSchema(db)).toThrow("newer"); db.close();
     await expect(createOwnerAuth({ directory, vaultPath, origin: "http://127.0.0.1:39146" })).rejects.toThrow("newer");
   });
 
-  it("rolls back incomplete enrollment and retains the one-time token for a safe retry", async () => {
-    const auth = await createOwnerAuth({ directory, vaultPath, origin: "http://127.0.0.1:39146" });
-    const token = fs.readFileSync(auth.tokenPath!, "utf8");
+  it("rolls back failed bootstrap and retries without creating a partial owner", async () => {
+    const store = await openAuthStorage(directory, vaultPath);
+    const { betterAuth } = await import("better-auth");
+    const authEngine = betterAuth({ database: store.database, secret: store.secret, emailAndPassword: { enabled: true } });
+    await (await authEngine.$context).runMigrations();
+    await store.close();
     const db = new DatabaseSync(path.join(directory, "auth.sqlite"));
     try {
       db.exec(`CREATE TRIGGER reject_account BEFORE INSERT ON account BEGIN SELECT RAISE(ABORT, 'test failure'); END`);
-      await expect(auth.enroll({ email, password }, token)).rejects.toThrow();
+      await expect(createOwnerAuth({ directory, vaultPath, origin: "http://127.0.0.1:39146" })).rejects.toThrow();
       expect(db.prepare('SELECT count(*) AS n FROM "user"').get()?.n).toBe(0);
-      expect(auth.hasOwner()).toBe(false);
-      expect(fs.existsSync(auth.tokenPath!)).toBe(true);
       db.exec("DROP TRIGGER reject_account");
-      expect(await auth.enroll({ email, password }, token)).toBe(true);
-    } finally { db.close(); await auth.close(); }
+      const owner = await createOwnerAuth({ directory, vaultPath, origin: "http://127.0.0.1:39146" });
+      expect(owner.hasOwner()).toBe(true);
+      await owner.close();
+    } finally { db.close(); }
   });
 
-  it("expires setup tokens and never issues a recovery token without an owner", async () => {
+  it("never permits recovery without an existing owner", async () => {
     const auth = await createOwnerAuth({ directory, vaultPath, origin: "http://127.0.0.1:39146" });
-    const token = fs.readFileSync(auth.tokenPath!, "utf8");
-    const realNow = Date.now;
-    Date.now = () => realNow() + 11 * 60_000;
-    try { expect(await auth.enroll({ email, password }, token)).toBe(false); }
-    finally { Date.now = realNow; await auth.close(); }
+    await auth.close();
+    const db = new DatabaseSync(path.join(directory, "auth.sqlite"));
+    db.exec("DELETE FROM vaultbridge_owner; DELETE FROM account; DELETE FROM user");
+    db.close();
     await expect(createOwnerAuth({ directory, vaultPath, origin: "http://127.0.0.1:39146", recover: true })).rejects.toThrow("No owner");
   });
 

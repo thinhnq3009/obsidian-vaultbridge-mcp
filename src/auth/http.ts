@@ -14,7 +14,7 @@ export function isOwnerRequestAllowed(peer: string | undefined, host: string | u
   return ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(peer ?? "") && host === expected.host && (origin === undefined || origin === expectedOrigin);
 }
 
-export async function startOwnerServer(options: { directory: string; vaultPath: string; port: number; recover?: boolean; maxFailures?: number; windowSeconds?: number; oauth?: Omit<OAuthProviderOptions, "ownerOrigin">; requireOwner?: boolean }) {
+export async function startOwnerServer(options: { directory: string; vaultPath: string; port: number; ownerUsername?: string; ownerPassword?: string; recover?: boolean; maxFailures?: number; windowSeconds?: number; oauth?: Omit<OAuthProviderOptions, "ownerOrigin"> }) {
   z.number().int().min(0).max(65535).parse(options.port);
   let owner: OwnerAuth | undefined;
   let origin = "";
@@ -59,11 +59,12 @@ export async function startOwnerServer(options: { directory: string; vaultPath: 
   app.get("/owner.js", (_request, response) => { response.type("js").send(ownerScript); });
   let recoveryComplete = false;
   app.get("/owner-state", (_request, response) => { response.json({ hasOwner: owner!.hasOwner(), recovering: owner!.recovering && !recoveryComplete }); });
-  app.post("/setup", async (request: Request<Record<string, string>, unknown, unknown>, response) => {
-    const body = z.object({ token: z.string().max(128), email: z.string().optional(), password: z.string() }).strict().safeParse(request.body);
+  app.post("/recover-owner", async (request: Request<Record<string, string>, unknown, unknown>, response) => {
+    if (!owner!.recovering || recoveryComplete) { response.sendStatus(404); return; }
+    const body = z.object({ token: z.string().max(128), password: z.string() }).strict().safeParse(request.body);
     if (!body.success) { response.sendStatus(400); return; }
     const { token, ...input } = body.data;
-    if (!await owner!.enroll(input, token)) { response.status(400).json({ error: "Setup rejected" }); return; }
+    if (!await owner!.recoverPassword(input, token)) { response.status(400).json({ error: "Recovery rejected" }); return; }
     recoveryComplete = true;
     response.json({ success: true });
   });
