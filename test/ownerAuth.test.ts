@@ -116,6 +116,18 @@ describe("local owner HTTP lifecycle", () => {
     expect((await post("/api/auth/sign-in/email", { username: "changed", password: "weak" })).status).toBe(401);
   });
 
+  it("rejects usernames that cannot be signed in through the provider without creating an owner", async () => {
+    for (const username of ["admin.", "admin..local"]) {
+      await expect(startOwnerServer({ directory, vaultPath, port: 0, ownerUsername: username, ownerPassword: password })).rejects.toThrow();
+      const db = new DatabaseSync(path.join(directory, "auth.sqlite"));
+      expect(db.prepare('SELECT count(*) AS n FROM "user"').get()?.n).toBe(0);
+      expect(db.prepare("SELECT count(*) AS n FROM vaultbridge_owner").get()?.n).toBe(0);
+      db.close();
+    }
+    service = await startOwnerServer({ directory, vaultPath, port: 0, ownerUsername: "admin.local", ownerPassword: password });
+    expect((await post("/api/auth/sign-in/email", { username: "admin.local", password })).status).toBe(200);
+  });
+
   it("allows only safe top-level OAuth login/consent navigation from a different site", async () => {
     await start();
     const navigation = { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" };

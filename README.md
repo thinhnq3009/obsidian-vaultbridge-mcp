@@ -398,7 +398,9 @@ owner is created automatically in the private SQLite auth directory when `owner-
 or explicit OAuth starts. Set `MCP_OWNER_USERNAME` and `MCP_OWNER_PASSWORD` in an
 untracked `.env` before first start. Username is a 3–64 character lowercase
 identifier beginning with a letter and containing only letters, digits, `.`, `_`
-or `-`; it is not an email. Existing email-based owners continue to sign in using
+or `-`; dots must separate nonempty parts (no trailing or consecutive dots).
+The resulting owner address must also pass email validation; the username itself
+is not an email. Existing email-based owners continue to sign in using
 their email. A custom password
 must be 12–128 characters and contain at least three of lowercase, uppercase, digits,
 and symbols. If omitted, the defaults are **`obsidian-admin` / `admin39145`**.

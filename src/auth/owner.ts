@@ -16,7 +16,7 @@ import type { VaultBackend } from "../backend/types.js";
 
 const DEFAULT_USERNAME = "obsidian-admin";
 const DEFAULT_PASSWORD = "admin39145";
-const usernameSchema = z.string().min(3).max(64).regex(/^[a-z][a-z0-9._-]*$/u);
+const usernameSchema = z.string().min(3).max(64).regex(/^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)*$/u);
 function strongPassword(password: string): boolean {
   return password.length >= 12 && password.length <= 128
     && [/[a-z]/u, /[A-Z]/u, /[0-9]/u, /[^a-zA-Z0-9]/u].filter((pattern) => pattern.test(password)).length >= 3;
@@ -70,6 +70,8 @@ export async function createOwnerAuth(options: { directory: string; vaultPath: s
     if (options.recover && !ownerId()) throw new Error("No owner exists to recover");
     if (!ownerId()) {
       const username = usernameSchema.parse(options.ownerUsername ?? DEFAULT_USERNAME);
+      const email = `${username}@owner.vaultbridge.example`;
+      if (!z.email().safeParse(email).success) throw new Error("MCP_OWNER_USERNAME must produce a valid owner email address");
       const password = options.ownerPassword ?? DEFAULT_PASSWORD;
       if (password !== DEFAULT_PASSWORD && !strongPassword(password)) throw new Error("MCP_OWNER_PASSWORD must be a strong 12–128 character password");
       const hash = await context.password.hash(password);
@@ -77,7 +79,7 @@ export async function createOwnerAuth(options: { directory: string; vaultPath: s
       try {
         if (ownerId()) throw new Error("Owner already exists");
         const user = await context.internalAdapter.createUser({
-          email: `${username}@owner.vaultbridge.example`, name: username, emailVerified: false,
+          email, name: username, emailVerified: false,
         }, { method: "email-password" });
         await context.internalAdapter.linkAccount({ userId: user.id, providerId: "credential", accountId: user.id, password: hash });
         db.prepare("INSERT INTO vaultbridge_owner (singleton, user_id, username, must_change_password) VALUES (1, ?, ?, ?)").run(user.id, username, password === DEFAULT_PASSWORD ? 1 : 0);
