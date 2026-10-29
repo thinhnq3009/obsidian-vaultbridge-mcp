@@ -1,6 +1,8 @@
 import { z } from "zod";
 
 import { VaultError } from "../types.js";
+import { assertVerifiedPrincipal, type VerifiedPrincipal } from "./oauth.js";
+import type { VaultGrant } from "./grants.js";
 
 const identifier = z.string().trim().min(1).max(512);
 const contextSchema = z.object({
@@ -18,8 +20,24 @@ export type OAuthContext = Readonly<Omit<z.infer<typeof contextSchema>, "scopes"
 export type AuthContext = OAuthContext | Readonly<{ mode: "token" | "none" | "stdio" }>;
 
 // A structurally valid object (including a decoded JWT/header) is not verified.
-// Phase B must replace the test-only issuer with an actual provider verifier.
 const trustedContexts = new WeakSet<OAuthContext>();
+const expirations = new WeakMap<OAuthContext, number>();
+
+/** Production issuer accepts only a live provider-verified object and server-resolved grant. */
+export function createVerifiedAuthContext(principal: VerifiedPrincipal, grant: VaultGrant, requestId: string): OAuthContext {
+  assertVerifiedPrincipal(principal);
+  if (grant.revoked || grant.principalId !== principal.principalId || grant.clientId !== principal.clientId
+    || grant.resource !== principal.resource) throw authorizationDenied();
+  const data = contextSchema.parse({
+    mode: "oauth", principalId: principal.principalId, clientId: principal.clientId,
+    resource: principal.resource, scopes: [...principal.scopes], requestId,
+    vaultId: grant.vaultId, grantId: grant.grantId,
+  });
+  const context: OAuthContext = Object.freeze({ ...data, scopes: Object.freeze(data.scopes) });
+  trustedContexts.add(context);
+  expirations.set(context, principal.expiresAt);
+  return context;
+}
 
 /** Test harness only. No production route, configuration or HTTP injection hook. */
 export function createTestAuthContext(input: unknown): OAuthContext {
@@ -32,7 +50,7 @@ export function createTestAuthContext(input: unknown): OAuthContext {
 }
 
 export function assertTrustedContext(context: OAuthContext): void {
-  if (!trustedContexts.has(context)) throw authorizationDenied();
+  if (!trustedContexts.has(context) || (expirations.get(context) ?? Infinity) <= Date.now()) throw authorizationDenied();
 }
 
 export function authorizationDenied(): VaultError {

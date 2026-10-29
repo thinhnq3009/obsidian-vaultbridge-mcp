@@ -94,6 +94,19 @@ afterEach(async () => {
 });
 
 describe("trusted immutable request contexts and explicit grants", () => {
+  it("resolves exactly one live principal/client/vault/resource grant and denies ambiguity", () => {
+    expect(grants.resolve("user-A", "A", "vault", resource)?.grantId).toBe("grant-A");
+    expect(grants.resolve("user-B", "A", "vault", resource)).toBeUndefined();
+    expect(grants.resolve("user-A", "A", "other-vault", resource)).toBeUndefined();
+    expect(grants.resolve("user-A", "A", "vault", "https://other.example/mcp")).toBeUndefined();
+    grants.put({ ...grant(), grantId: "duplicate-grant" });
+    expect(grants.resolve("user-A", "A", "vault", resource)).toBeUndefined();
+    grants.revoke("duplicate-grant");
+    expect(grants.resolve("user-A", "A", "vault", resource)?.grantId).toBe("grant-A");
+    expect(grants.list()).toHaveLength(3);
+    db.prepare("UPDATE vaultbridge_vault_grant SET document=? WHERE grant_id=?").run("malformed-json", "duplicate-grant");
+    expect(() => grants.resolve("user-A", "A", "vault", resource)).toThrow(/authorization denied/);
+  });
   it("freezes context and scopes, rejects missing fields and structural/decoded claims", () => {
     const auth = context();
     expect(Object.isFrozen(auth)).toBe(true);
@@ -468,12 +481,17 @@ describe.each(["scan", "indexed"] as const)("private search projections in %s mo
   it("rejects a grant revoked while evaluating an asynchronous search projection", async () => {
     const a = scoped();
     const lstat = fs.lstat.bind(fs);
+    let revoked = false;
     vi.spyOn(fs, "lstat").mockImplementation(async (...args: Parameters<typeof fs.lstat>) => {
       const stat = await lstat(...args);
-      if (String(args[0]).endsWith("Notes/A.md")) grants.revoke("grant-A");
+      if (String(args[0]).split(path.sep).join("/").endsWith("Notes/A.md")) {
+        grants.revoke("grant-A");
+        revoked = true;
+      }
       return stat;
     });
     await expect(search(a)).rejects.toMatchObject({ code: "ACCESS_DENIED" });
+    expect(revoked).toBe(true);
   });
 });
 

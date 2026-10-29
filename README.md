@@ -431,3 +431,12 @@ remove that additional protection. The owner listener also has a separate cheap
 uses MCP's tool budget or trusts forwarding/client-IP headers.
 
 Storage and backup/recovery/rollback instructions: [MIGRATION.md](MIGRATION.md#owner-auth-storage-auth-002).
+# Experimental OAuth development
+
+AUTH-003 now has an explicit-opt-in Better Auth runtime. It remains
+**default-off pending #60 risk review**; this is not public deployment/release
+approval. See [runtime configuration, verified identity contract, limits and
+rollback](docs/AUTH-003-runtime.md). Existing STDIO/static-token/legacy loopback
+modes remain available. No automatic OAuth migration is performed.
+See [AUTH-004 Phase B](docs/AUTH-004-phase-b.md) for owner-only consent/grants,
+request-scoped enforcement and live OAuth-to-MCP test boundaries.

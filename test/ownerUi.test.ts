@@ -5,12 +5,13 @@ import { ownerHtml, ownerScript } from "../src/auth/ui.js";
 let dom: JSDOM | undefined;
 afterEach(() => { dom?.window.close(); });
 
-function page(state: { hasOwner: boolean; recovering: boolean }, loggedIn = false) {
+function page(state: { hasOwner: boolean; recovering: boolean }, loggedIn = false, grants: unknown[] = []) {
   dom = new JSDOM(ownerHtml, { url: "http://127.0.0.1:39146", runScripts: "outside-only" });
   const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
     await Promise.resolve();
     if (init?.method === "POST") return Response.json({ success: true });
     if (url === "/owner-state") return Response.json(state);
+    if (url === "/oauth/grants") return loggedIn ? Response.json({ grants }) : new Response(null, { status: 401 });
     return loggedIn ? Response.json({ email: "<img src=x onerror=alert(1)>", expiresAt: "tomorrow" }) : new Response(null, { status: 401 });
   });
   Object.assign(dom.window, { fetch: fetcher });
@@ -27,6 +28,21 @@ function formData(document: Document, id: string, values: Record<string, string>
 }
 
 describe("minimal owner UI behavior independent from HTTP", () => {
+  it("renders client grants as text and revokes only via a same-origin CSRF-protected POST", async () => {
+    const { document, fetcher } = page({ hasOwner: true, recovering: false }, true, [{
+      grantId: "local-grant", clientId: "<img src=x onerror=alert(1)>", revoked: false,
+      clientPermissions: [{ path: "Notes", actions: ["readNote"], tools: ["obsidian_read_note"] }],
+    }]);
+    await ready();
+    await vi.waitFor(() => expect(document.getElementById("grant-list")!.textContent).toContain("<img"));
+    expect(document.querySelector("img")).toBeNull();
+    document.getElementById("grant-list")!.querySelector("button")!.click();
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledWith("/oauth/grants/revoke", expect.objectContaining({
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-VaultBridge-CSRF": "1" },
+      body: JSON.stringify({ grantId: "local-grant" }),
+    })));
+  });
   it("shows first-run setup only and submits tokens/passwords in a same-origin POST, not URLs or storage", async () => {
     const { document, window, fetcher } = page({ hasOwner: false, recovering: false }); await ready();
     expect(document.getElementById("setup")!.hidden).toBe(false);

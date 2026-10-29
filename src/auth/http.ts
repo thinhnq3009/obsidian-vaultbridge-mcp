@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { createOwnerAuth, type OwnerAuth } from "./owner.js";
 import { ownerHtml, ownerScript } from "./ui.js";
+import type { OAuthProviderOptions } from "./oauth.js";
 
 /** No proxy support: bind to literal IPv4 loopback, validate TCP peer and exact Host. */
 export function isOwnerRequestAllowed(peer: string | undefined, host: string | undefined, origin: string | undefined, expectedOrigin: string): boolean {
@@ -13,7 +14,7 @@ export function isOwnerRequestAllowed(peer: string | undefined, host: string | u
   return ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(peer ?? "") && host === expected.host && (origin === undefined || origin === expectedOrigin);
 }
 
-export async function startOwnerServer(options: { directory: string; vaultPath: string; port: number; recover?: boolean; maxFailures?: number; windowSeconds?: number }) {
+export async function startOwnerServer(options: { directory: string; vaultPath: string; port: number; recover?: boolean; maxFailures?: number; windowSeconds?: number; oauth?: Omit<OAuthProviderOptions, "ownerOrigin">; requireOwner?: boolean }) {
   z.number().int().min(0).max(65535).parse(options.port);
   let owner: OwnerAuth | undefined;
   let origin = "";
@@ -28,8 +29,15 @@ export async function startOwnerServer(options: { directory: string; vaultPath: 
       "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY",
     });
     if (!owner) { response.sendStatus(503); return; }
+    // The public provider must be able to navigate a browser to the static
+    // owner login/consent shell. Never allow cross-site fetches, iframe loads,
+    // API reads, mutations or arbitrary owner pages through this exception.
+    const oauthNavigation = request.method === "GET"
+      && ["/login", "/consent"].includes(request.path)
+      && request.headers["sec-fetch-mode"] === "navigate"
+      && request.headers["sec-fetch-dest"] === "document";
     if (!isOwnerRequestAllowed(request.socket.remoteAddress, request.headers.host, request.headers.origin, origin)
-      || (request.headers["sec-fetch-site"] && !["same-origin", "none"].includes(String(request.headers["sec-fetch-site"])))) {
+      || (request.headers["sec-fetch-site"] && !["same-origin", "none"].includes(String(request.headers["sec-fetch-site"])) && !oauthNavigation)) {
       response.sendStatus(403); return;
     }
     if (request.headers["content-encoding"] && request.headers["content-encoding"] !== "identity") { response.sendStatus(415); return; }
@@ -47,7 +55,7 @@ export async function startOwnerServer(options: { directory: string; vaultPath: 
     standardHeaders: "draft-8", legacyHeaders: false,
   }));
   app.use(express.json({ limit: "8kb", inflate: false, strict: true }));
-  app.get(["/", "/login", "/admin"], (_request, response) => { response.type("html").send(ownerHtml); });
+  app.get(["/", "/login", "/admin", "/consent"], (_request, response) => { response.type("html").send(ownerHtml); });
   app.get("/owner.js", (_request, response) => { response.type("js").send(ownerScript); });
   let recoveryComplete = false;
   app.get("/owner-state", (_request, response) => { response.json({ hasOwner: owner!.hasOwner(), recovering: owner!.recovering && !recoveryComplete }); });
@@ -61,7 +69,7 @@ export async function startOwnerServer(options: { directory: string; vaultPath: 
   });
   app.use(async (request: Request<Record<string, string>, unknown, unknown>, response) => {
     const url = new URL(request.originalUrl, origin);
-    if (url.origin !== origin || !url.pathname.startsWith("/api/auth/")) { response.sendStatus(404); return; }
+    if (url.origin !== origin || (!url.pathname.startsWith("/api/auth/") && !url.pathname.startsWith("/oauth/"))) { response.sendStatus(404); return; }
     const headers = new Headers();
     for (const name of ["cookie", "content-type", "origin", "sec-fetch-site", "x-vaultbridge-csrf"]) {
       const value = request.headers[name];
@@ -100,6 +108,7 @@ export async function startOwnerServer(options: { directory: string; vaultPath: 
     return {
       origin,
       tokenPath: owner.tokenPath,
+      owner,
       async close() {
         await new Promise<void>((resolve, reject) => {
           server.close((error) => { if (error) reject(error); else resolve(); });

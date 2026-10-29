@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import http from "node:http";
 import { setTimeout } from "node:timers/promises";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -59,6 +59,37 @@ async function login() {
 }
 
 describe("local owner HTTP lifecycle", () => {
+  it("allows only safe top-level OAuth login/consent navigation from a different site", async () => {
+    await start();
+    const navigation = { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" };
+    // Node fetch overwrites Sec-Fetch-Mode with "cors"; raw HTTP is needed
+    // to reproduce browser navigation metadata faithfully.
+    const navigate = (route: string, headers: Record<string, string>) => new Promise<{
+      status: number; headers: http.IncomingHttpHeaders;
+    }>((resolve, reject) => {
+      const request = http.request(new URL(route, service!.origin), { headers }, (response) => {
+        response.resume();
+        response.on("end", () => { resolve({ status: response.statusCode!, headers: response.headers }); });
+      });
+      request.on("error", reject); request.end();
+    });
+    for (const route of ["/login", "/consent"]) {
+      const response = await navigate(`${route}?sig=invalid`, navigation);
+      expect(response.status).toBe(200);
+      expect(response.headers["content-security-policy"]).toContain("frame-ancestors 'none'");
+      expect(response.headers["referrer-policy"]).toBe("no-referrer");
+    }
+    for (const route of ["/admin", "/owner-state", "/api/auth/get-session", "/oauth/grants", "/owner.js"]) {
+      expect((await navigate(route, navigation)).status).toBe(403);
+    }
+    for (const headers of [
+      { ...navigation, "sec-fetch-mode": "cors" },
+      { ...navigation, "sec-fetch-dest": "iframe" },
+      { ...navigation, origin: "https://attacker.example" },
+      { "sec-fetch-site": "cross-site" },
+    ]) expect((await navigate("/consent", headers)).status).toBe(403);
+    expect((await post("/setup", {}, navigation)).status).toBe(403);
+  });
   it("bootstraps once, hashes passwords, persists WAL/users/key/session across restart, logs out", async () => {
     await start();
     const token = fs.readFileSync(service!.tokenPath!, "utf8");
@@ -218,6 +249,34 @@ describe("local owner HTTP lifecycle", () => {
 });
 
 describe("owner storage and guard contracts", () => {
+  it("bootstraps the same explicit auth directory that the OAuth runtime will open", async () => {
+    const reservation = http.createServer();
+    await new Promise<void>((resolve) => { reservation.listen(0, "127.0.0.1", resolve); });
+    const address = reservation.address();
+    if (!address || typeof address === "string") throw new Error("Expected TCP port");
+    await new Promise<void>((resolve) => { reservation.close(() => { resolve(); }); });
+    const envDirectory = path.join(root, "wrong-env-directory");
+    const explicitDirectory = path.join(root, "explicit-auth-directory");
+    const env = { ...process.env, MCP_TRANSPORT: "stdio", MCP_AUTH_MODE: "token",
+      MCP_AUTH_DIRECTORY: envDirectory, HOME: root, USERPROFILE: root,
+      XDG_DATA_HOME: path.join(root, "default-data"), APPDATA: path.join(root, "default-data") };
+    const fallbackDirectory = authDataDirectory(process.platform, env, root);
+    const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), path.resolve("src/index.ts"),
+      "owner-auth", "--vault", vaultPath, "--stdio", "--owner-port", String(address.port),
+      "--auth-directory", explicitDirectory], {
+      cwd: root, env,
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    const exited = new Promise<void>((resolve, reject) => { child.once("error", reject); child.once("exit", () => { resolve(); }); });
+    try {
+      await vi.waitFor(() => expect([explicitDirectory, fallbackDirectory].some((directory) =>
+        fs.existsSync(path.join(directory, "setup-token")))).toBe(true), { timeout: 15000 });
+      expect(fs.existsSync(path.join(explicitDirectory, "setup-token"))).toBe(true);
+      expect(fs.existsSync(path.join(explicitDirectory, "auth.sqlite"))).toBe(true);
+      expect(fs.existsSync(envDirectory)).toBe(false);
+      expect(fs.existsSync(path.join(root, "default-data"))).toBe(false);
+    } finally { child.kill(); await exited; }
+  });
   it("chooses per-OS app data paths and rejects relative app-data configuration", () => {
     expect(authDataDirectory("linux", { XDG_DATA_HOME: root }, root)).toBe(path.join(root, "obsidian-vaultbridge-mcp"));
     expect(authDataDirectory("linux", {}, root)).toBe(path.join(root, ".local/share/obsidian-vaultbridge-mcp"));
