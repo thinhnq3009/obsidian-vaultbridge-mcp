@@ -9,3 +9,7 @@ AGENTS.md
 .gitnexus
 .claude/
 CLAUDE.md
+# Owner-auth runtime secrets belong only in per-user app data, never Git.
+auth.sqlite*
+session.key
+setup-token

@@ -85,6 +85,17 @@ jobs:
       - run: npm ci
       - name: Publish with npm trusted publishing and provenance
         run: npm publish --access public --tag latest --provenance
+      - name: Wait for npm registry processing
+        run: |
+          for attempt in {1..30}; do
+            if test "$(npm view obsidian-vaultbridge-mcp@0.1.0 version --prefer-online 2>/dev/null)" = 0.1.0; then
+              exit 0
+            fi
+            echo "Registry is still processing the accepted publication (attempt $attempt/30)."
+            sleep 10
+          done
+          echo "Publication was accepted but registry visibility is delayed; verify separately without republishing."
+          exit 1
       - name: Verify registry version, source and provenance
         env:
           RELEASE_SHA: ${{ inputs.sha }}

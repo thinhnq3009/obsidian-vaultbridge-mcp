@@ -70,6 +70,9 @@ export type BackendStatus = {
 
 export interface VaultBackend {
   readonly capabilities: BackendCapabilities;
+  readonly requestScoped?: boolean;
+  runWithTool?<T>(name: string, callback: () => Promise<T>): Promise<T>;
+  preflightWriteNotes?(paths: readonly string[]): Promise<void>;
   initialize(): Promise<void>;
   close(): Promise<void>;
   status(): Promise<BackendStatus>;

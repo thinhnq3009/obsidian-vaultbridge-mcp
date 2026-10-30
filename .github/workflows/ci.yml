@@ -1,3 +1,4 @@
+
 name: CI
 
 on:
@@ -9,6 +10,7 @@ permissions:
 
 jobs:
   test:
+    if: github.ref == 'refs/heads/main' || (github.base_ref == 'main' && github.head_ref == 'develop') || (github.base_ref == 'develop' && (github.head_ref == 'feat/issue-48-oauth-phase-b' || github.head_ref == 'feat/owner-env-bootstrap' || github.head_ref == 'feat/issue-49-single-tunnel-oauth'))
     strategy:
       fail-fast: false
       matrix:
@@ -23,14 +25,18 @@ jobs:
           cache: npm
       - run: node -e "if (process.versions.node !== '${{ matrix.node }}') process.exit(1)"
       - run: npm ci
+      - run: npm ci --prefix scripts/spikes/better-auth-sdk-v2
+      - run: npm --prefix scripts/spikes/better-auth-sdk-v2 run smoke
       - run: npm run build
       - run: node --input-type=module -e "import('./dist/runtime.js').then(m => m.assertSupportedNode())"
+      - run: npx vitest run test/windowsPermissions.test.ts
       - run: npm test -- --maxWorkers=2
       - run: npm run lint
       - run: npm pack --dry-run
       - run: npm run smoke:package
 
   dependencies:
+    if: github.ref == 'refs/heads/main' || (github.base_ref == 'main' && github.head_ref == 'develop') || (github.base_ref == 'develop' && (github.head_ref == 'feat/issue-48-oauth-phase-b' || github.head_ref == 'feat/owner-env-bootstrap' || github.head_ref == 'feat/issue-49-single-tunnel-oauth'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -41,3 +47,4 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm audit --omit=dev --audit-level=high
       - run: npm audit --audit-level=high
+      - run: npm audit --prefix scripts/spikes/better-auth-sdk-v2 --audit-level=high

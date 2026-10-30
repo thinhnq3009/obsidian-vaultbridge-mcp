@@ -21,12 +21,12 @@ export async function createApplication(config: AppConfig): Promise<ApplicationC
   return { backend, close: () => backend.close() };
 }
 
-type McpServerOptions = { colorfulLogs?: boolean };
+type McpServerOptions = { colorfulLogs?: boolean; requestScoped?: boolean };
 
 export function createMcpServer(backend: VaultBackend, options: McpServerOptions = {}) {
   const { name, version } = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { name: string; version: string };
   const server = new McpServer({ name, version });
-  installToolCallLogging(server, options);
+  installToolCallLogging(server, { ...options, requestScoped: backend.requestScoped === true }, backend);
   for (const registerTool of toolRegistrars) registerTool(server, backend);
   return server;
 }
@@ -36,24 +36,26 @@ export async function createServer(config: AppConfig, options: { application?: A
   return { server: createMcpServer(application.backend, { colorfulLogs: config.colorfulLogs }), backend: application.backend, application };
 }
 
-function installToolCallLogging(server: McpServer, options: McpServerOptions): void {
+function installToolCallLogging(server: McpServer, options: McpServerOptions, backend: VaultBackend): void {
   const registerTool = server.registerTool.bind(server);
-  server.registerTool = ((name, config, callback) => registerTool(name, config, wrapToolCallback(name, callback, options))) as McpServer["registerTool"];
+  server.registerTool = ((name, config, callback) => registerTool(name, config, wrapToolCallback(name, callback, options, backend))) as McpServer["registerTool"];
 }
 
-function wrapToolCallback<InputArgs extends ToolInputSchema>(toolName: string, callback: ToolCallback<InputArgs>, options: McpServerOptions): ToolCallback<InputArgs> {
+function wrapToolCallback<InputArgs extends ToolInputSchema>(toolName: string, callback: ToolCallback<InputArgs>, options: McpServerOptions, backend: VaultBackend): ToolCallback<InputArgs> {
   const wrapped = async (...args: Parameters<ToolCallback<InputArgs>>): Promise<CallToolResult> => {
     const startedAt = Date.now();
-    const { input, extra } = extractToolCallArgs(args);
+    const { input, extra: callerExtra } = extractToolCallArgs(args);
+    const extra = options.requestScoped ? undefined : callerExtra;
     const inputBytes = jsonByteLength(input);
     try {
       const invoke = callback as (...invokeArgs: Parameters<ToolCallback<InputArgs>>) => CallToolResult | Promise<CallToolResult>;
-      const result = await invoke(...args);
-      const error = result.isError === true ? errorSummaryFromResult(result) : undefined;
-      writeToolLog({ toolName, extra, inputBytes, outputBytes: jsonByteLength(result), durationMs: Date.now() - startedAt, status: result.isError === true ? "error" : "ok", colorful: options.colorfulLogs === true, ...(error ? { error } : {}) });
+      const result = await (backend.runWithTool ? backend.runWithTool(toolName, () => Promise.resolve(invoke(...args))) : invoke(...args));
+      const error = result.isError === true && !options.requestScoped ? errorSummaryFromResult(result) : undefined;
+      writeToolLog({ toolName, extra, requestScoped: options.requestScoped === true, inputBytes, outputBytes: jsonByteLength(result), durationMs: Date.now() - startedAt, status: result.isError === true ? "error" : "ok", colorful: options.colorfulLogs === true, ...(error ? { error } : {}) });
       return result;
     } catch (error) {
-      writeToolLog({ toolName, extra, inputBytes, outputBytes: 0, durationMs: Date.now() - startedAt, status: "error", colorful: options.colorfulLogs === true, error: error instanceof Error ? error.message : String(error) });
+      writeToolLog({ toolName, extra, requestScoped: options.requestScoped === true, inputBytes, outputBytes: 0, durationMs: Date.now() - startedAt, status: "error", colorful: options.colorfulLogs === true, error: options.requestScoped ? "Authorized tool failed" : error instanceof Error ? error.message : String(error) });
+      if (options.requestScoped) return { isError: true, content: [{ type: "text", text: "ACCESS_DENIED: Request authorization denied." }] };
       throw error;
     }
   };
@@ -68,8 +70,8 @@ function extractToolCallArgs(args: readonly unknown[]): { input: unknown; extra:
   };
 }
 
-function writeToolLog(event: { toolName: string; extra: Partial<ToolExtra> | undefined; inputBytes: number; outputBytes: number; durationMs: number; status: "ok" | "error"; colorful: boolean; error?: string }): void {
-  const caller = callerFields(event.extra);
+function writeToolLog(event: { toolName: string; extra: Partial<ToolExtra> | undefined; requestScoped: boolean; inputBytes: number; outputBytes: number; durationMs: number; status: "ok" | "error"; colorful: boolean; error?: string }): void {
+  const caller = event.requestScoped ? ["caller=scoped"] : callerFields(event.extra);
   const fields = [
     colorize("[obsidian-vault-mcp]", "cyan", event.colorful),
     `tool=${colorize(event.toolName, "magenta", event.colorful)}`,

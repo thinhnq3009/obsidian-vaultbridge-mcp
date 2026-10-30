@@ -39,6 +39,21 @@ const envSchema = z.object({
   MCP_ALLOWED_HOSTS: z.string().optional(),
   MCP_HTTP_TLS_PROXY: booleanString(false),
   MCP_AUTH_TOKEN: z.string().trim().optional(),
+  MCP_AUTH_MODE: z.enum(["oauth", "token", "none"]).optional(),
+  MCP_OAUTH_ENABLED: booleanString(false),
+  MCP_OAUTH_ISSUER: z.url().optional(),
+  MCP_AUTH_DIRECTORY: z.string().trim().min(1).optional(),
+  MCP_VAULT_ID: z.string().trim().min(1).max(512).optional(),
+  MCP_OWNER_PORT: z.coerce.number().int().min(1).max(65535).default(39146),
+  MCP_OWNER_USERNAME: z.string().optional(),
+  MCP_OWNER_PASSWORD: z.string().optional(),
+  MCP_ALLOW_UNAUTHENTICATED_NETWORK: booleanString(false),
+  MCP_RATE_LIMIT_RPM: z.coerce.number().int().min(1).max(100000).default(1200),
+  MCP_RATE_LIMIT_BURST: z.coerce.number().int().min(1).max(10000).default(120),
+  MCP_MAX_CONCURRENT: z.coerce.number().int().min(1).max(128).default(32),
+  MCP_AUTHENTICATED_CLIENT_RPM: z.coerce.number().int().min(1).max(100000).default(600),
+  MCP_UNAUTHENTICATED_ATTEMPT_RPM: z.coerce.number().int().min(1).max(1000).default(60),
+  MCP_OAUTH_ENDPOINT_RPM: z.coerce.number().int().min(1).max(1000).default(60),
 });
 
 type CliOverrides = Record<string, string | undefined>;
@@ -58,7 +73,8 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env, argv: string
   const vaultPath = data.BACKEND === "filesystem" ? resolveFilesystemVaultPath(data.VAULT_PATH, merged) : data.VAULT_PATH;
   if (data.BACKEND === "filesystem" && !vaultPath) throw new Error("Invalid filesystem configuration: VAULT_PATH is required and no Obsidian vault could be auto-detected. Pass --vault or set VAULT_PATH.");
   if (data.BACKEND === "local-rest" && !data.OBSIDIAN_API_KEY) throw new Error("Invalid Local REST configuration: OBSIDIAN_API_KEY is required");
-  if (!isLoopbackHost(data.MCP_HTTP_HOST) && !data.MCP_AUTH_TOKEN) throw new Error("MCP_AUTH_TOKEN is required when MCP_HTTP_HOST is not loopback");
+  if (!isLoopbackHost(data.MCP_HTTP_HOST) && !data.MCP_AUTH_TOKEN && data.MCP_AUTH_MODE !== "oauth"
+    && !(data.MCP_AUTH_MODE === "none" && data.MCP_ALLOW_UNAUTHENTICATED_NETWORK)) throw new Error("MCP_AUTH_TOKEN is required when MCP_HTTP_HOST is not loopback, unless an explicit safe alternative mode is configured");
 
   const config: AppConfig = {
     backend: data.BACKEND,
@@ -86,6 +102,21 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env, argv: string
     mcpHttpPath: data.MCP_HTTP_PATH.replace(/\/+$/u, "") || "/",
     ...(splitList(data.MCP_ALLOWED_HOSTS).length > 0 ? { mcpAllowedHosts: splitList(data.MCP_ALLOWED_HOSTS) } : {}),
     ...(data.MCP_AUTH_TOKEN ? { mcpAuthToken: data.MCP_AUTH_TOKEN } : {}),
+    ...(data.MCP_AUTH_MODE ? { mcpAuthMode: data.MCP_AUTH_MODE } : {}),
+    mcpOauthEnabled: data.MCP_OAUTH_ENABLED,
+    ...(data.MCP_OAUTH_ISSUER ? { mcpOauthIssuer: data.MCP_OAUTH_ISSUER } : {}),
+    ...(data.MCP_AUTH_DIRECTORY ? { mcpAuthDirectory: path.resolve(data.MCP_AUTH_DIRECTORY) } : {}),
+    ...(data.MCP_VAULT_ID ? { mcpVaultId: data.MCP_VAULT_ID } : {}),
+    mcpOwnerPort: data.MCP_OWNER_PORT,
+    ...(data.MCP_OWNER_USERNAME !== undefined ? { mcpOwnerUsername: data.MCP_OWNER_USERNAME } : {}),
+    ...(data.MCP_OWNER_PASSWORD !== undefined ? { mcpOwnerPassword: data.MCP_OWNER_PASSWORD } : {}),
+    mcpAllowUnauthenticatedNetwork: data.MCP_ALLOW_UNAUTHENTICATED_NETWORK,
+    mcpRateLimitRpm: data.MCP_RATE_LIMIT_RPM,
+    mcpRateLimitBurst: data.MCP_RATE_LIMIT_BURST,
+    mcpMaxConcurrent: data.MCP_MAX_CONCURRENT,
+    mcpAuthenticatedClientRpm: data.MCP_AUTHENTICATED_CLIENT_RPM,
+    mcpUnauthenticatedAttemptRpm: data.MCP_UNAUTHENTICATED_ATTEMPT_RPM,
+    mcpOauthEndpointRpm: data.MCP_OAUTH_ENDPOINT_RPM,
   };
   if (config.mcpTransport === "http") validateHttpDeployment(config);
   return config;
@@ -156,6 +187,13 @@ export function parseCliArgs(argv: string[]): CliOverrides {
     "auto-agent-edit-at": "AUTO_AGENT_EDIT_AT",
     "index-mode": "INDEX_MODE", "watch-mode": "WATCH_MODE", "cache-dir": "CACHE_DIR", transport: "MCP_TRANSPORT", host: "MCP_HTTP_HOST",
     port: "MCP_HTTP_PORT", path: "MCP_HTTP_PATH", "auth-token": "MCP_AUTH_TOKEN", "api-key": "OBSIDIAN_API_KEY", "base-url": "OBSIDIAN_BASE_URL", "verify-ssl": "OBSIDIAN_VERIFY_SSL",
+    "auth-mode": "MCP_AUTH_MODE", "oauth-enabled": "MCP_OAUTH_ENABLED", "oauth-issuer": "MCP_OAUTH_ISSUER",
+    "auth-directory": "MCP_AUTH_DIRECTORY", "vault-id": "MCP_VAULT_ID", "owner-port": "MCP_OWNER_PORT",
+    "allow-unauthenticated-network": "MCP_ALLOW_UNAUTHENTICATED_NETWORK",
+    "mcp-rpm": "MCP_RATE_LIMIT_RPM", "mcp-burst": "MCP_RATE_LIMIT_BURST",
+    "mcp-max-concurrent": "MCP_MAX_CONCURRENT", "authenticated-client-rpm": "MCP_AUTHENTICATED_CLIENT_RPM",
+    "unauthenticated-attempt-rpm": "MCP_UNAUTHENTICATED_ATTEMPT_RPM",
+    "oauth-endpoint-rpm": "MCP_OAUTH_ENDPOINT_RPM",
   };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -175,7 +213,7 @@ export function parseCliArgs(argv: string[]): CliOverrides {
   return overrides;
 }
 
-function loadDotEnvFile(): Record<string, string> {
+export function loadDotEnvFile(): Record<string, string> {
   const filePath = path.resolve(process.cwd(), ".env");
   if (!fs.existsSync(filePath)) return {};
   const result: Record<string, string> = {};
@@ -198,9 +236,27 @@ function isLoopbackHost(host: string): boolean {
 }
 
 export function validateHttpDeployment(config: AppConfig): void {
+  const mode = httpAuthMode(config);
+  if ((mode !== "token" && config.mcpAuthToken) || (mode === "token" && !config.mcpAuthToken)) throw new Error("MCP_AUTH_TOKEN is required only in token mode; authentication modes cannot be combined.");
+  if (mode === "oauth") {
+    if (!config.mcpOauthEnabled) throw new Error("OAuth is default-off pending #60; explicitly set MCP_OAUTH_ENABLED=true for experimental use.");
+    if (!config.vaultPath || config.backend !== "filesystem" || !config.mcpVaultId) throw new Error("OAuth requires a filesystem vault and explicit MCP_VAULT_ID.");
+    const issuer = new URL(config.mcpOauthIssuer ?? "invalid:");
+    if (!["https:", "http:"].includes(issuer.protocol) || issuer.username || issuer.password || issuer.search || issuer.hash
+      || issuer.pathname !== "/api/auth" || issuer.href !== config.mcpOauthIssuer
+      || (issuer.protocol !== "https:" && !isLoopbackHost(issuer.hostname))) throw new Error("OAuth requires a canonical HTTPS MCP_OAUTH_ISSUER ending in /api/auth (HTTP loopback only).");
+    if (!config.mcpAllowedHosts?.includes(issuer.hostname)) throw new Error("OAuth issuer host must be in MCP_ALLOWED_HOSTS.");
+    if (["/", "/api", "/api/auth", "/.well-known"].some((prefix) => config.mcpHttpPath === prefix)
+      || config.mcpHttpPath.startsWith("/api/auth/") || config.mcpHttpPath.startsWith("/.well-known/")) throw new Error("MCP path overlaps OAuth endpoints.");
+  }
   if (!isLoopbackHost(config.mcpHttpHost)) {
     if (!config.mcpHttpTlsProxy) throw new Error("Network HTTP requires TLS termination at a trusted proxy and MCP_HTTP_TLS_PROXY=true.");
-    if (!config.mcpAuthToken) throw new Error("Network HTTP requires MCP_AUTH_TOKEN.");
+    if (mode === "none" && !config.mcpAllowUnauthenticatedNetwork) throw new Error("Network HTTP requires MCP_AUTH_TOKEN or explicit MCP_ALLOW_UNAUTHENTICATED_NETWORK=true in none mode.");
     if (!config.mcpAllowedHosts?.length) throw new Error("Network HTTP requires an explicit MCP_ALLOWED_HOSTS allowlist.");
   }
+}
+
+/** Unconfigured legacy loopback stays anonymous; OAuth never activates implicitly. */
+export function httpAuthMode(config: AppConfig): "oauth" | "token" | "none" {
+  return config.mcpAuthMode ?? (config.mcpAuthToken ? "token" : "none");
 }

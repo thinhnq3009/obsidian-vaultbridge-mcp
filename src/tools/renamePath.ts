@@ -36,6 +36,9 @@ export const registerRenamePathTool: ToolRegistrar = (server, client) => {
 
         const sourceName = basename(path);
         if (sourceName === newName) {
+          // Legacy no-ops stay compatible. A scoped request must still prove
+          // move/path rights and the file revision, not just echo a denied path.
+          if (client.requestScoped) await performMovePath(client, path, newPath, true, expectedRevision, expectedRevision);
           return successResult(`Path already has the name ${newName}.`, {
             oldPath: path,
             newPath,
