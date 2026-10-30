@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import os from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import { generateKeyPair, SignJWT } from "jose";
 
@@ -381,21 +382,189 @@ async function runLocalE2E() {
   }
   console.log("  ✓ All private owner endpoints fail closed / 404 on public port");
 
-  // 10g. Token exchange with invalid PKCE code_verifier
+  // 10g. Isolate PKCE verifier mismatch using native client under active grant
+  console.log("  Testing PKCE verifier mismatch isolation with native client...");
+  const db = new DatabaseSync(path.join(authDir, "auth.sqlite"));
+  const nativeClientId = "native-pkce-probe-client";
+  const nativeRedirectUri = "http://127.0.0.1:49152/callback";
+  db.prepare(`
+    INSERT OR REPLACE INTO oauthClient (
+      id, clientId, name, redirectUris, tokenEndpointAuthMethod, applicationType,
+      grantTypes, responseTypes, requirePKCE, createdAt, updatedAt
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+  `).run(
+    nativeClientId,
+    nativeClientId,
+    "Native PKCE Probe Client",
+    JSON.stringify([nativeRedirectUri]),
+    "none",
+    "native",
+    JSON.stringify(["authorization_code", "refresh_token"]),
+    JSON.stringify(["code"]),
+    1,
+  );
+
+  db.prepare(`
+    INSERT OR REPLACE INTO oauthClientResource (id, clientId, resourceId, createdAt)
+    VALUES (?, ?, ?, datetime('now'))
+  `).run(
+    "native-client-resource-link",
+    nativeClientId,
+    `${publicOrigin}/mcp`,
+  );
+  db.close();
+
+  // Authorize initiate with PKCE S256 challenge
+  const probeVerifier = randomBytes(32).toString("base64url");
+  const probeChallenge = createHash("sha256").update(probeVerifier).digest("base64url");
+  const probeState = randomBytes(16).toString("base64url");
+
+  const probeAuthParams = new URLSearchParams({
+    client_id: nativeClientId,
+    redirect_uri: nativeRedirectUri,
+    response_type: "code",
+    scope: "vault:read offline_access",
+    resource: `${publicOrigin}/mcp`,
+    state: probeState,
+    prompt: "consent",
+    code_challenge: probeChallenge,
+    code_challenge_method: "S256",
+  });
+
+  const probeAuthRes = await fetch(`${publicOrigin}/api/auth/oauth2/authorize?${probeAuthParams}`, {
+    headers: { accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" },
+    redirect: "manual",
+  });
+  if (probeAuthRes.status !== 302) {
+    throw new Error(`Expected 302 for native client authorize, got ${probeAuthRes.status}`);
+  }
+  const probeRedirectUrl = new URL(probeAuthRes.headers.get("location"));
+  const probeOauthQuery = probeRedirectUrl.search.slice(1);
+
+  // Resume and create grant on owner port
+  await fetch(`${ownerOrigin}/oauth/authorize`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-vaultbridge-csrf": "1",
+      origin: ownerOrigin,
+      cookie: sessionCookie,
+    },
+    body: JSON.stringify({ oauth_query: probeOauthQuery }),
+  });
+
+  const probeGrantRes = await fetch(`${ownerOrigin}/oauth/grants`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-vaultbridge-csrf": "1",
+      origin: ownerOrigin,
+      cookie: sessionCookie,
+    },
+    body: JSON.stringify({
+      oauth_query: probeOauthQuery,
+      principalPermissions: [{ path: "Notes", actions: ["readNote", "listFiles"] }],
+      clientPermissions: [{ path: "Notes", actions: ["readNote", "listFiles"], tools: ["obsidian_read_note", "obsidian_list_files"] }],
+    }),
+  });
+  if (probeGrantRes.status !== 200) {
+    throw new Error(`Failed to create grant for native PKCE probe: status ${probeGrantRes.status}`);
+  }
+
+  // Consent approval yielding fresh valid code
+  const probeConsentRes = await fetch(`${ownerOrigin}/oauth/consent`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-vaultbridge-csrf": "1",
+      origin: ownerOrigin,
+      cookie: sessionCookie,
+    },
+    body: JSON.stringify({ oauth_query: probeOauthQuery, accept: true }),
+  });
+  if (probeConsentRes.status !== 200) {
+    throw new Error(`Failed consent approval for native PKCE probe: status ${probeConsentRes.status}`);
+  }
+  const probeConsentBody = await probeConsentRes.json();
+  const probeCallbackUrl = new URL(probeConsentBody.url);
+  const probeValidCode = probeCallbackUrl.searchParams.get("code");
+  if (!probeValidCode) throw new Error("No authorization code in consent callback");
+
+  // Exchange with invalid verifier: changing ONLY the verifier under valid client and active grant
   const invalidPkceRes = await fetch(`${publicOrigin}/api/auth/oauth2/token`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      client_id: clientId,
+      client_id: nativeClientId,
       grant_type: "authorization_code",
-      code: "invalid-or-replayed-code",
-      code_verifier: "wrong-verifier",
-      redirect_uri: redirectUri,
+      code: probeValidCode,
+      code_verifier: "wrong-verifier-123456789012345678901234567890",
+      redirect_uri: nativeRedirectUri,
       resource: `${publicOrigin}/mcp`,
     }),
   });
   console.log(`  Invalid PKCE token exchange status: ${invalidPkceRes.status} (expected 400)`);
-  if (invalidPkceRes.status !== 400) throw new Error(`Expected 400 for invalid PKCE exchange, got ${invalidPkceRes.status}`);
+  const invalidPkceBody = await invalidPkceRes.json();
+  console.log(`  Invalid PKCE error body: ${JSON.stringify(invalidPkceBody)}`);
+  if (
+    invalidPkceRes.status !== 400 ||
+    invalidPkceBody.error !== "invalid_grant" ||
+    !invalidPkceBody.error_description?.includes("code verification failed")
+  ) {
+    throw new Error(
+      `Expected 400 invalid_grant with 'code verification failed', got status ${invalidPkceRes.status}: ${JSON.stringify(invalidPkceBody)}`
+    );
+  }
+  console.log("  ✓ PKCE verifier mismatch strictly isolated: rejected fail-closed with 'code verification failed'");
+
+  // Obtain another fresh valid code and exchange with the matching verifier to prove it succeeds
+  const matchVerifier = randomBytes(32).toString("base64url");
+  const matchChallenge = createHash("sha256").update(matchVerifier).digest("base64url");
+  const matchAuthParams = new URLSearchParams({
+    client_id: nativeClientId,
+    redirect_uri: nativeRedirectUri,
+    response_type: "code",
+    scope: "vault:read offline_access",
+    resource: `${publicOrigin}/mcp`,
+    state: randomBytes(16).toString("base64url"),
+    prompt: "consent",
+    code_challenge: matchChallenge,
+    code_challenge_method: "S256",
+  });
+  const matchAuthRes = await fetch(`${publicOrigin}/api/auth/oauth2/authorize?${matchAuthParams}`, {
+    headers: { accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" },
+    redirect: "manual",
+  });
+  const matchOauthQuery = new URL(matchAuthRes.headers.get("location")).search.slice(1);
+  const matchConsentRes = await fetch(`${ownerOrigin}/oauth/consent`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-vaultbridge-csrf": "1",
+      origin: ownerOrigin,
+      cookie: sessionCookie,
+    },
+    body: JSON.stringify({ oauth_query: matchOauthQuery, accept: true }),
+  });
+  const matchCode = new URL((await matchConsentRes.json()).url).searchParams.get("code");
+  const matchTokenRes = await fetch(`${publicOrigin}/api/auth/oauth2/token`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: nativeClientId,
+      grant_type: "authorization_code",
+      code: matchCode,
+      code_verifier: matchVerifier,
+      redirect_uri: nativeRedirectUri,
+      resource: `${publicOrigin}/mcp`,
+    }),
+  });
+  console.log(`  Matching PKCE token exchange status: ${matchTokenRes.status} (expected 200)`);
+  const matchTokenBody = await matchTokenRes.json();
+  if (matchTokenRes.status !== 200 || !matchTokenBody.access_token) {
+    throw new Error(`Expected 200 with access_token for valid PKCE exchange, got ${matchTokenRes.status}`);
+  }
+  console.log("  ✓ Matching PKCE exchange succeeds: access_token issued successfully");
 
   console.log("  ✓ Negative security verifications PASSED");
 
@@ -409,6 +578,8 @@ async function runLocalE2E() {
   console.log("ChatGPT CIMD Fetch & Redirect URI Match:   PASS (https://chatgpt.com/oauth/client.json)");
   console.log("Enforce RFC 7523 private_key_jwt:          PASS (client cannot use 'none')");
   console.log("Reject Forged Client Assertion:            PASS (untrusted key fails closed)");
+  console.log("PKCE S256 Verifier Mismatch Isolated:      PASS (code verification failed)");
+  console.log("PKCE S256 Valid Exchange (Native Client):  PASS (access_token issued)");
   console.log("Private Owner Port 39146 Isolation:        PASS (never exposed externally)");
   console.log("CSRF & Origin Defense on Owner Port:       PASS");
   console.log("Host, Origin & Compression on Public Port: PASS");

@@ -402,6 +402,9 @@ describe("AUTH-005A Single Tunnel OAuth Architecture (39145 public / 39146 priva
       resource: `${h.origin}/mcp`,
     });
     expect(badTokenRes.status).toBe(400);
+    const body = await badTokenRes.json() as Record<string, unknown>;
+    expect(body.error).toBe("invalid_grant");
+    expect(body.error_description).toContain("code verification failed");
   });
 
   it("authenticates simulated ChatGPT client using RFC 7523 private_key_jwt assertions without bypass", async () => {
