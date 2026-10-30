@@ -68,7 +68,7 @@ Location: http://127.0.0.1:39146/login?response_type=code&client_id=...&redirect
 
 ### 4. Local Owner Authentication & Consent
 1. The host browser follows the 302 redirect to `http://127.0.0.1:39146/login`.
-2. The owner signs in with valid credentials via `POST /api/auth/sign-in/email` with `X-VaultBridge-CSRF: 1`.
+2. The owner signs in with valid credentials via `POST /api/auth/sign-in/email` with mandatory `X-VaultBridge-CSRF: 1` header.
 3. The owner shell resumes authorization via `POST /oauth/authorize` and transitions to `/consent`.
 4. The owner selects an explicit subtree (e.g., `Notes`) and action permissions (`readNote`, `listFiles`). Root (`*` or `/`) paths are rejected fail-closed.
 5. The grant is persisted in `vaultbridge_grant` SQLite storage.
@@ -77,8 +77,15 @@ Location: http://127.0.0.1:39146/login?response_type=code&client_id=...&redirect
 Location: https://chatgpt.com/connector_platform_oauth_redirect?code=...&state=...&iss=https://<stable-host>/api/auth
 ```
 
-### 5. PKCE Token Exchange
-The MCP client backend exchanges the single-use authorization code and `code_verifier` at `POST /api/auth/oauth2/token`. Upon successful verification, opaque `access_token` and `refresh_token` are issued.
+### 5. PKCE Token Exchange & RFC 7523 Client Authentication
+The MCP client exchanges the single-use authorization code and `code_verifier` at `POST /api/auth/oauth2/token`.
+- **Generic Native Clients (`token_endpoint_auth_method: none`)**: Single-use authorization code exchanged with PKCE S256 verifier.
+- **ChatGPT Client (`token_endpoint_auth_method: private_key_jwt`)**: Better Auth enforces RFC 7523 client assertions:
+  - Requires `client_assertion_type: urn:ietf:params:oauth:client-assertion-type:jwt-bearer` and signed RS256 JWT `client_assertion`.
+  - Calling token endpoint with `none` fails closed: `{"error":"invalid_client","error_description":"client registered for private_key_jwt cannot use none"}`.
+  - Assertions with untrusted keys, mismatched audience, or expired timestamps are rejected with HTTP 400/401.
+  - Replay attacks are prevented via `oauthClientAssertion` SQLite table caching assertion `jti`.
+  - Token refresh requires a fresh client assertion with a unique `jti`.
 
 ### 6. Permission-Scoped Tool Calls
 Requests to `POST /mcp` with `Authorization: Bearer <access_token>` are verified against the active SQLite grant:
@@ -92,18 +99,43 @@ Requests to `POST /mcp` with `Authorization: Bearer <access_token>` are verified
 
 ## Negative Security Verifications
 
-1. **Owner Isolation:** All owner routes (`/login`, `/consent`, `/admin`, `/owner-state`, `/api/auth/sign-in/email`, `/oauth/grants`) return `401` or `404` when accessed through the public tunnel.
-2. **Host Header Validation:** Public requests with spoofed or unlisted `Host` headers are rejected with `403 Forbidden`.
-3. **Origin Validation:** Cross-origin requests with unapproved `Origin` headers are rejected with `403 Forbidden`.
-4. **Compression Ban:** Compressed request bodies (`Content-Encoding` != `identity`) are rejected with `415 Unsupported Media Type`.
-5. **SSRF Protection:** CIMD client metadata fetching rejects private and loopback IPs and requires HTTPS.
+| Security Control | Test Mechanism | Expected & Observed Result |
+|---|---|---|
+| **Owner Listener Isolation** | Accessing `/login`, `/consent`, `/admin`, `/owner-state`, `/api/auth/sign-in/email`, `/oauth/grants` on port 39145 or via public tunnel | **401 Unauthorized / 404 Not Found** (fail-closed) |
+| **Owner CSRF Defense** | `POST` requests to owner listener without `X-VaultBridge-CSRF: 1` | **403 Forbidden** |
+| **Owner Origin Defense** | `POST` requests to owner listener with cross-site `Origin` | **403 Forbidden** |
+| **Public Host Defense** | Public requests with forged or unlisted `Host` headers | **403 Forbidden** |
+| **Public Origin Defense** | Public requests with untrusted cross-origin `Origin` headers | **403 Forbidden** |
+| **Compression Ban** | Requests with `Content-Encoding` != `identity` | **415 Unsupported Media Type** |
+| **SSRF Prevention** | CIMD fetching resolves once, verifies TLS, and rejects loopback/private IPs | **Type/Resolution Error** |
+| **PKCE Enforcement** | Token exchange without PKCE or with mismatched `code_verifier` | **400 Bad Request** |
+| **Client Auth Enforcement** | Token exchange for `private_key_jwt` client using `none` | **400 Bad Request (`invalid_client`)** |
+| **JWT Assertion Signature** | Token exchange using forged key not present in client JWKS | **400 / 401 Unauthorized** |
+| **JWT Assertion Audience** | Token assertion with `aud` not matching token endpoint URL | **400 / 401 Unauthorized** |
+| **JWT Assertion Expiry** | Token assertion with past `exp` timestamp | **400 / 401 Unauthorized** |
+| **JWT Assertion Replay** | Reusing the same `jti` across multiple token requests | **400 Bad Request (`jti has already been used`)** |
 
-## ChatGPT Integration Diagnostic
+## Script Lifecycle & Isolation Hardening
+
+Both `scripts/local-e2e.mjs` and `scripts/tunnel-chatgpt-e2e.mjs` implement:
+1. **Isolated Temp Directories**:
+   - Creates a unique per-run folder in `os.tmpdir()` (`vaultbridge-auth005a-XXXXXX` and `vaultbridge-tunnel-XXXXXX`).
+   - All logs (`cloudflared.log`), disposable vaults, SQLite auth databases, and cache folders are strictly isolated within this temporary directory.
+2. **Process Lifecycle Management**:
+   - Signal traps registered for `SIGINT` (Ctrl+C), `SIGTERM`, and normal exit.
+   - Guaranteed cleanup: terminates child processes (`cloudflared`), closes HTTP listeners, and removes temporary directories in `try ... finally` blocks.
+3. **No Arbitrary Hangs**:
+   - Tests execute synchronously and clean up immediately upon completion.
+   - Live tunnel debugging is available on-demand via `--keep-alive`.
+
+## ChatGPT Integration Diagnostic: Simulated vs Real
 
 | Checkpoint | Result | Technical Detail |
 |---|---|---|
 | Client Metadata Document (CIMD) | **PASS** | `https://chatgpt.com/oauth/client.json` fetched over network with HTTP 200, valid JSON. |
 | Redirect URI Matching | **PASS** | `https://chatgpt.com/connector_platform_oauth_redirect` strictly verified against CIMD `redirect_uris`. |
-| Client Authentication Method | **VERIFIED** | ChatGPT registers `token_endpoint_auth_method: "private_key_jwt"` with `jwks_uri: "https://chatgpt.com/oauth/jwks.json"`. The provider correctly fails closed when `none` is attempted. |
+| Client Auth Method Enforcement | **PASS** | ChatGPT registers `token_endpoint_auth_method: "private_key_jwt"` with `jwks_uri: "https://chatgpt.com/oauth/jwks.json"`. Provider fails closed (`400 invalid_client`) when `none` is attempted. |
+| Forged Assertion Defense | **PASS** | Client assertions signed with private keys not in `chatgpt.com/oauth/jwks.json` are rejected fail-closed (400/401). |
 | Browser Localhost Limitation | **LOCKED / DOCUMENTED** | The browser redirect target is `http://127.0.0.1:39146/login`. This architecture requires the browser performing login/consent to run on the local host machine. Remote cross-device sign-in is unsupported by design. |
-| Live External ChatGPT E2E | **BLOCKED** | Verified end-to-end through tunnel with simulated client and real ChatGPT metadata. Live execution inside ChatGPT UI requires an active ChatGPT account with custom MCP connector developer entitlement. Per exit criteria #4, recorded as **BLOCKED**, not fabricated as PASSED. |
+| Simulated ChatGPT `private_key_jwt` Flow | **PASS** | Fully verified in Vitest automated suite (`test/oauthSingleTunnel.test.ts`): simulated RSA key pair, RS256 assertion, valid JWKS exchange, token issuance, MCP tool execution (`obsidian_read_note`), replay prevention, and token refresh. |
+| Real Live ChatGPT Connector E2E | **BLOCKED** | Live external ChatGPT connection requires an active ChatGPT developer account with custom connector entitlement and OpenAI's private signing key. Per exit criteria #4, strictly recorded as **BLOCKED**, never fabricated as PASSED. |

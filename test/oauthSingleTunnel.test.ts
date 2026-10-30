@@ -1,19 +1,20 @@
 import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { generateKeyPair, exportJWK, SignJWT } from "jose";
 
-import { startHttpServer } from "../src/http.js";
-import { makeConfig } from "./helpers.js";
 import { clientA, oauthHarness, password, redirectUri } from "./oauthHelpers.js";
+
+let chatGptJwks: { keys: Record<string, unknown>[] } = { keys: [] };
 
 vi.mock("@better-auth/cimd/node", () => ({
   fetchClientMetadataResource: (input: string | URL) => {
-    const clientId = String(input);
-    if (clientId === "https://chatgpt.com/oauth/client.json") {
+    const urlStr = String(input);
+    if (urlStr === "https://chatgpt.com/oauth/client.json") {
       return Promise.resolve(Response.json({
         client_id: "https://chatgpt.com/oauth/client.json",
         client_name: "ChatGPT",
@@ -25,11 +26,14 @@ vi.mock("@better-auth/cimd/node", () => ({
         jwks_uri: "https://chatgpt.com/oauth/jwks.json",
       }));
     }
-    if (!["https://client-a.example/metadata.json", "https://client-b.example/metadata.json"].includes(clientId)) {
-      throw new Error("Unrecognized fixture client");
+    if (urlStr === "https://chatgpt.com/oauth/jwks.json") {
+      return Promise.resolve(Response.json(chatGptJwks));
+    }
+    if (!["https://client-a.example/metadata.json", "https://client-b.example/metadata.json"].includes(urlStr)) {
+      throw new Error(`Unrecognized fixture client: ${urlStr}`);
     }
     return Promise.resolve(Response.json({
-      client_id: clientId,
+      client_id: urlStr,
       client_name: "Disposable test client",
       redirect_uris: ["http://127.0.0.1:49152/callback"],
       application_type: "native",
@@ -345,5 +349,315 @@ describe("AUTH-005A Single Tunnel OAuth Architecture (39145 public / 39146 priva
       body: "{}",
     });
     expect(crossOriginRes.status).toBe(403);
+
+    // Compressed request (Content-Encoding != identity)
+    const compressedRes = await fetch(`${h.origin}/api/auth/oauth2/token`, {
+      method: "POST",
+      headers: {
+        host: new URL(h.origin).host,
+        "content-type": "application/x-www-form-urlencoded",
+        "content-encoding": "gzip",
+      },
+      body: "grant_type=authorization_code",
+    });
+    expect(compressedRes.status).toBe(415);
+  });
+
+  it("enforces CSRF and origin defense on private owner listener", async () => {
+    const h = await setupSingleTunnel();
+
+    // Missing CSRF header
+    const noCsrfRes = await fetch(`${h.ownerOrigin}/api/auth/sign-in/email`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: h.ownerOrigin,
+      },
+      body: JSON.stringify({ username: "owner@example.test", password }),
+    });
+    expect(noCsrfRes.status).toBe(403);
+
+    // Mismatched origin
+    const badOriginRes = await fetch(`${h.ownerOrigin}/api/auth/sign-in/email`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-vaultbridge-csrf": "1",
+        origin: "https://evil-site.example",
+      },
+      body: JSON.stringify({ username: "owner@example.test", password }),
+    });
+    expect(badOriginRes.status).toBe(403);
+  });
+
+  it("rejects token exchange with invalid PKCE code_verifier", async () => {
+    const h = await setupSingleTunnel();
+    const code = await h.grant();
+
+    const badTokenRes = await h.form("token", {
+      grant_type: "authorization_code",
+      code: code.code,
+      code_verifier: "wrong-pkce-verifier-does-not-match",
+      redirect_uri: redirectUri,
+      resource: `${h.origin}/mcp`,
+    });
+    expect(badTokenRes.status).toBe(400);
+  });
+
+  it("authenticates simulated ChatGPT client using RFC 7523 private_key_jwt assertions without bypass", async () => {
+    const h = await setupSingleTunnel();
+
+    // Setup simulated RSA keys for ChatGPT
+    const { privateKey, publicKey } = await generateKeyPair("RS256");
+    const jwk = await exportJWK(publicKey);
+    jwk.kid = "chatgpt-simulated-key-1";
+    jwk.use = "sig";
+    jwk.alg = "RS256";
+    chatGptJwks = { keys: [jwk] };
+
+    const chatGptClientId = "https://chatgpt.com/oauth/client.json";
+    const chatGptRedirectUri = "https://chatgpt.com/connector_platform_oauth_redirect";
+
+    // 1. Initiate authorization with ChatGPT client metadata
+    const verifier = randomBytes(32).toString("base64url");
+    const challenge = createHash("sha256").update(verifier).digest("base64url");
+    const state = randomBytes(16).toString("base64url");
+
+    const params = new URLSearchParams({
+      client_id: chatGptClientId,
+      redirect_uri: chatGptRedirectUri,
+      response_type: "code",
+      scope: "vault:read offline_access",
+      resource: `${h.origin}/mcp`,
+      state,
+      prompt: "consent",
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+    });
+
+    const authRes = await fetch(`${h.origin}/api/auth/oauth2/authorize?${params}`, {
+      headers: { accept: "text/html" },
+      redirect: "manual",
+    });
+    expect(authRes.status).toBe(302);
+    const location = new URL(authRes.headers.get("location")!);
+    const oauthQuery = location.search.slice(1);
+
+    // 2. Owner login on private port 39146
+    const loginRes = await h.post("/api/auth/sign-in/email", {
+      username: "owner@example.test",
+      password,
+    });
+    expect(loginRes.status).toBe(200);
+    const cookie = loginRes.headers.getSetCookie().map((c) => c.split(";")[0]).join("; ");
+
+    // 3. Grant & Consent
+    await h.post("/oauth/authorize", { oauth_query: oauthQuery }, cookie);
+    await h.post("/oauth/grants", {
+      oauth_query: oauthQuery,
+      principalPermissions: [{ path: "Notes", actions: ["readNote", "listFiles"] }],
+      clientPermissions: [{ path: "Notes", actions: ["readNote", "listFiles"], tools: ["obsidian_read_note", "obsidian_list_files"] }],
+    }, cookie);
+
+    const consentRes = await h.post("/oauth/consent", { oauth_query: oauthQuery, accept: true }, cookie);
+    const callbackUrl = new URL((await consentRes.json() as { url: string }).url);
+    const code = callbackUrl.searchParams.get("code")!;
+    expect(code).toBeTruthy();
+
+    // 4. Negative test: Attempting token exchange with 'none' must fail closed
+    const noneRes = await fetch(`${h.origin}/api/auth/oauth2/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: chatGptClientId,
+        grant_type: "authorization_code",
+        code,
+        code_verifier: verifier,
+        redirect_uri: chatGptRedirectUri,
+        resource: `${h.origin}/mcp`,
+      }),
+    });
+    expect(noneRes.status).toBe(400);
+    const noneBody = await noneRes.json() as { error: string; error_description: string };
+    expect(noneBody.error).toBe("invalid_client");
+    expect(noneBody.error_description).toContain("private_key_jwt");
+
+    // 5. Negative test: Attempting exchange with forged key assertion must fail
+    const { privateKey: attackerKey } = await generateKeyPair("RS256");
+    const forgedAssertion = await new SignJWT({})
+      .setProtectedHeader({ alg: "RS256", kid: "attacker-key" })
+      .setIssuer(chatGptClientId)
+      .setSubject(chatGptClientId)
+      .setAudience([`${h.origin}/api/auth/oauth2/token`])
+      .setJti(randomUUID())
+      .setIssuedAt()
+      .setExpirationTime("5m")
+      .sign(attackerKey);
+
+    const forgedRes = await fetch(`${h.origin}/api/auth/oauth2/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: chatGptClientId,
+        grant_type: "authorization_code",
+        code,
+        code_verifier: verifier,
+        redirect_uri: chatGptRedirectUri,
+        resource: `${h.origin}/mcp`,
+        client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+        client_assertion: forgedAssertion,
+      }),
+    });
+    expect([400, 401]).toContain(forgedRes.status);
+
+    // 5b. Negative test: Mismatched audience must fail
+    const wrongAudAssertion = await new SignJWT({})
+      .setProtectedHeader({ alg: "RS256", kid: "chatgpt-simulated-key-1" })
+      .setIssuer(chatGptClientId)
+      .setSubject(chatGptClientId)
+      .setAudience(["https://wrong-audience.example/token"])
+      .setJti(randomUUID())
+      .setIssuedAt()
+      .setExpirationTime("5m")
+      .sign(privateKey);
+
+    const wrongAudRes = await fetch(`${h.origin}/api/auth/oauth2/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: chatGptClientId,
+        grant_type: "authorization_code",
+        code,
+        code_verifier: verifier,
+        redirect_uri: chatGptRedirectUri,
+        resource: `${h.origin}/mcp`,
+        client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+        client_assertion: wrongAudAssertion,
+      }),
+    });
+    expect([400, 401]).toContain(wrongAudRes.status);
+
+    // 5c. Negative test: Expired assertion must fail
+    const expiredAssertion = await new SignJWT({})
+      .setProtectedHeader({ alg: "RS256", kid: "chatgpt-simulated-key-1" })
+      .setIssuer(chatGptClientId)
+      .setSubject(chatGptClientId)
+      .setAudience([`${h.origin}/api/auth/oauth2/token`])
+      .setJti(randomUUID())
+      .setIssuedAt(Math.floor(Date.now() / 1000) - 600)
+      .setExpirationTime(Math.floor(Date.now() / 1000) - 300)
+      .sign(privateKey);
+
+    const expiredRes = await fetch(`${h.origin}/api/auth/oauth2/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: chatGptClientId,
+        grant_type: "authorization_code",
+        code,
+        code_verifier: verifier,
+        redirect_uri: chatGptRedirectUri,
+        resource: `${h.origin}/mcp`,
+        client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+        client_assertion: expiredAssertion,
+      }),
+    });
+    expect([400, 401]).toContain(expiredRes.status);
+
+    // 6. Positive test: Valid client assertion signed with ChatGPT's simulated private key
+    const validJti = randomUUID();
+    const validAssertion = await new SignJWT({})
+      .setProtectedHeader({ alg: "RS256", kid: "chatgpt-simulated-key-1" })
+      .setIssuer(chatGptClientId)
+      .setSubject(chatGptClientId)
+      .setAudience([`${h.origin}/api/auth/oauth2/token`])
+      .setJti(validJti)
+      .setIssuedAt()
+      .setExpirationTime("5m")
+      .sign(privateKey);
+
+    const tokenRes = await fetch(`${h.origin}/api/auth/oauth2/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: chatGptClientId,
+        grant_type: "authorization_code",
+        code,
+        code_verifier: verifier,
+        redirect_uri: chatGptRedirectUri,
+        resource: `${h.origin}/mcp`,
+        client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+        client_assertion: validAssertion,
+      }),
+    });
+    expect(tokenRes.status).toBe(200);
+    const tokens = await tokenRes.json() as { access_token: string; refresh_token: string };
+    expect(tokens.access_token).toBeTruthy();
+    expect(tokens.refresh_token).toBeTruthy();
+
+    // 7. Execute MCP tool with issued token
+    const client = new Client({ name: "simulated-chatgpt-client", version: "1.0.0" });
+    runningClients.push(client);
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${h.origin}/mcp`), {
+      requestInit: { headers: { authorization: `Bearer ${tokens.access_token}` } },
+    }));
+    const toolCall = await client.callTool({ name: "obsidian_read_note", arguments: { path: "Notes/Doc.md" } });
+    expect(toolCall.isError).not.toBe(true);
+    expect(JSON.stringify(toolCall)).toContain("Permitted content");
+
+    // 8. Negative test: Replay prevention - reusing validJti must be rejected
+    const replayedAssertion = await new SignJWT({})
+      .setProtectedHeader({ alg: "RS256", kid: "chatgpt-simulated-key-1" })
+      .setIssuer(chatGptClientId)
+      .setSubject(chatGptClientId)
+      .setAudience([`${h.origin}/api/auth/oauth2/token`])
+      .setJti(validJti)
+      .setIssuedAt()
+      .setExpirationTime("5m")
+      .sign(privateKey);
+
+    const replayRes = await fetch(`${h.origin}/api/auth/oauth2/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: chatGptClientId,
+        grant_type: "refresh_token",
+        refresh_token: tokens.refresh_token,
+        resource: `${h.origin}/mcp`,
+        client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+        client_assertion: replayedAssertion,
+      }),
+    });
+    expect(replayRes.status).toBe(400);
+    const replayBody = await replayRes.json() as { error_description: string };
+    expect(replayBody.error_description).toContain("jti has already been used");
+
+    // 9. Positive test: Refresh token exchange with a new fresh client assertion
+    const refreshAssertion = await new SignJWT({})
+      .setProtectedHeader({ alg: "RS256", kid: "chatgpt-simulated-key-1" })
+      .setIssuer(chatGptClientId)
+      .setSubject(chatGptClientId)
+      .setAudience([`${h.origin}/api/auth/oauth2/token`])
+      .setJti(randomUUID())
+      .setIssuedAt()
+      .setExpirationTime("5m")
+      .sign(privateKey);
+
+    const refreshRes = await fetch(`${h.origin}/api/auth/oauth2/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: chatGptClientId,
+        grant_type: "refresh_token",
+        refresh_token: tokens.refresh_token,
+        resource: `${h.origin}/mcp`,
+        client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+        client_assertion: refreshAssertion,
+      }),
+    });
+    expect(refreshRes.status).toBe(200);
+    const refreshed = await refreshRes.json() as { access_token: string; refresh_token: string };
+    expect(refreshed.access_token).toBeTruthy();
+    expect(refreshed.refresh_token).not.toBe(tokens.refresh_token);
   });
 });
