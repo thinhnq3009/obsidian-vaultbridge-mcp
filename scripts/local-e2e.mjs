@@ -2,46 +2,20 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import os from "node:os";
-import { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import { generateKeyPair, SignJWT } from "jose";
 
 import { startHttpServer } from "../src/http.js";
 import { makeConfig } from "../test/helpers.js";
+import { runE2E } from "./e2eLifecycle.js";
+import { verifyNativeFlow } from "./e2eNativeFlow.js";
+import { verifyDiscovery } from "./e2eDiscovery.js";
 
-let server = null;
-let tempDir = null;
-let isCleaningUp = false;
+async function runLocalE2E(lifecycle) {
+  const fetch = lifecycle.fetch;
+  console.log("=== STARTING AUTH-005A LOCAL E2E VERIFICATION (isolated disposable vault) ===");
 
-async function cleanup() {
-  if (isCleaningUp) return;
-  isCleaningUp = true;
-  console.log("\n[cleanup] Cleaning up server and temporary files...");
-  if (server) {
-    try { await server.close(); } catch (err) { console.error("[cleanup] Error closing server:", err.message); }
-  }
-  if (tempDir) {
-    try { await fs.rm(tempDir, { recursive: true, force: true }); } catch (err) { console.error("[cleanup] Error removing tempDir:", err.message); }
-  }
-  console.log("[cleanup] Cleanup finished.");
-}
-
-process.on("SIGINT", async () => {
-  console.log("\nReceived SIGINT. Initiating graceful shutdown...");
-  await cleanup();
-  process.exit(130);
-});
-
-process.on("SIGTERM", async () => {
-  console.log("\nReceived SIGTERM. Initiating graceful shutdown...");
-  await cleanup();
-  process.exit(143);
-});
-
-async function runLocalE2E() {
-  console.log("=== STARTING AUTH-005A LOCAL E2E VERIFICATION (PORTS 39145 / 39146) ===");
-
-  tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "vaultbridge-auth005a-"));
+  const tempDir = lifecycle.useDirectory(await fs.mkdtemp(path.join(os.tmpdir(), "vaultbridge-auth005a-")));
   const vaultPath = path.join(tempDir, "disposable-vault");
   const authDir = path.join(tempDir, "auth-data");
   const cacheDir = path.join(tempDir, "cache-data");
@@ -82,8 +56,9 @@ async function runLocalE2E() {
     mcpOwnerPassword: ownerPassword,
   });
 
-  server = await startHttpServer(config);
-  console.log("✓ Server started successfully on ports 39145 (MCP/OAuth) and 39146 (owner)");
+  lifecycle.useServer(await startHttpServer(config));
+  lifecycle.signal.throwIfAborted();
+  console.log(`✓ Server started successfully on ports ${mcpPort} (MCP/OAuth) and ${ownerPort} (owner)`);
 
   // 1. 401 Challenge
   console.log("\n[1] Testing 401 WWW-Authenticate challenge on /mcp...");
@@ -100,28 +75,9 @@ async function runLocalE2E() {
   }
   console.log("  ✓ 401 Challenge PASSED");
 
-  // 2. Discovery
-  console.log("\n[2] Testing OAuth discovery endpoints...");
-  const resourceMetaRes = await fetch(`${publicOrigin}/.well-known/oauth-protected-resource/mcp`);
-  console.log(`  Protected resource metadata status: ${resourceMetaRes.status}`);
-  const resourceMeta = await resourceMetaRes.json();
-  console.log(`  Resource: ${resourceMeta.resource}`);
-  console.log(`  Authorization servers: ${JSON.stringify(resourceMeta.authorization_servers)}`);
-  if (resourceMetaRes.status !== 200 || resourceMeta.resource !== `${publicOrigin}/mcp`) {
-    throw new Error("Protected resource metadata check failed");
-  }
-
-  const authServerUrl = resourceMeta.authorization_servers[0];
-  const authServerMetaRes = await fetch(`${authServerUrl}/.well-known/oauth-authorization-server`);
-  console.log(`  Authorization server metadata status: ${authServerMetaRes.status}`);
-  const authServerMeta = await authServerMetaRes.json();
-  console.log(`  Issuer: ${authServerMeta.issuer}`);
-  console.log(`  Token endpoint: ${authServerMeta.token_endpoint}`);
-  console.log(`  Code challenge methods: ${JSON.stringify(authServerMeta.code_challenge_methods_supported)}`);
-  if (authServerMetaRes.status !== 200 || !authServerMeta.code_challenge_methods_supported.includes("S256")) {
-    throw new Error("Authorization server metadata check failed");
-  }
-  console.log("  ✓ Discovery PASSED");
+  // 2. Validate protected-resource metadata and both authorization aliases.
+  await verifyDiscovery(fetch, publicOrigin, ownerOrigin);
+  console.log("  ✓ Both discovery aliases use the canonical public origin with no owner leak");
 
   // 3. Authorization initiate (PKCE)
   console.log("\n[3] Testing OAuth authorize initiate (PKCE S256)...");
@@ -149,18 +105,17 @@ async function runLocalE2E() {
   });
   console.log(`  Authorize status: ${authorizeRes.status}`);
   const location = authorizeRes.headers.get("location");
-  console.log(`  Redirect location: ${location}`);
+  console.log(`  Redirect location: ${location?.split(/[?#]/, 1)[0]}`);
   if (authorizeRes.status !== 302 || !location || !location.startsWith(`${ownerOrigin}/login`)) {
-    console.log("  Authorize body:", await authorizeRes.text());
-    throw new Error(`Authorize redirect failed: status=${authorizeRes.status}, location=${location}`);
+    throw new Error(`Authorize redirect failed: status=${authorizeRes.status}, location=${location?.split(/[?#]/, 1)[0]}`);
   }
-  console.log("  ✓ Authorize redirect to private owner 39146 PASSED");
+  console.log(`  ✓ Authorize redirect to private owner ${ownerPort} PASSED`);
 
   const redirectUrl = new URL(location);
   const oauthQuery = redirectUrl.search.slice(1);
 
   // 4. Owner Login on private port 39146
-  console.log("\n[4] Testing Owner Login on 127.0.0.1:39146...");
+  console.log(`\n[4] Testing Owner Login on 127.0.0.1:${ownerPort}...`);
   const loginRes = await fetch(`${ownerOrigin}/api/auth/sign-in/email`, {
     method: "POST",
     headers: {
@@ -192,8 +147,9 @@ async function runLocalE2E() {
     body: JSON.stringify({ oauth_query: oauthQuery }),
   });
   console.log(`  Resume authorize status: ${resumeRes.status}`);
+  if (resumeRes.status !== 200) throw new Error(`Resume failed: ${resumeRes.status}`);
   const resumeBody = await resumeRes.json();
-  console.log(`  Consent target URL: ${resumeBody.url}`);
+  console.log(`  Consent target URL: ${resumeBody.url?.split(/[?#]/, 1)[0]}`);
 
   // Create scoped grant: Notes subtree only!
   const grantRes = await fetch(`${ownerOrigin}/oauth/grants`, {
@@ -211,7 +167,9 @@ async function runLocalE2E() {
     }),
   });
   console.log(`  Grant creation status: ${grantRes.status}`);
+  if (grantRes.status !== 200) throw new Error(`Grant failed: ${grantRes.status}`);
   const grantBody = await grantRes.json();
+  if (!grantBody.grantId) throw new Error("Missing grant ID");
   console.log(`  Grant ID: ${grantBody.grantId}`);
 
   // Consent approval
@@ -227,21 +185,21 @@ async function runLocalE2E() {
   });
   console.log(`  Consent status: ${consentRes.status}`);
   const consentBody = await consentRes.json();
-  console.log(`  Callback URL: ${consentBody.url}`);
+  console.log(`  Callback destination: ${new URL(consentBody.url).origin}${new URL(consentBody.url).pathname}`);
   const callbackUrl = new URL(consentBody.url);
   const authCode = callbackUrl.searchParams.get("code");
   const callbackState = callbackUrl.searchParams.get("state");
   const callbackIss = callbackUrl.searchParams.get("iss");
-  console.log(`  Authorization Code: ${authCode ? `${authCode.slice(0, 10)}...` : "null"}`);
+  console.log(`  Authorization Code: ${authCode ? "received (redacted)" : "null"}`);
   console.log(`  State matches: ${callbackState === state}`);
   console.log(`  Issuer: ${callbackIss}`);
-  if (consentRes.status !== 200 || !authCode || callbackState !== state || callbackIss !== `${publicOrigin}/api/auth`) {
+  if (consentRes.status !== 200 || callbackUrl.origin + callbackUrl.pathname !== redirectUri || !authCode || callbackState !== state || callbackIss !== `${publicOrigin}/api/auth`) {
     throw new Error("Consent flow failed to produce valid callback parameters");
   }
   console.log("  ✓ Consent and callback generation PASSED");
 
   // 6. Token Endpoint private_key_jwt Enforcement (Public Port 39145)
-  console.log("\n[6] Testing Token endpoint private_key_jwt enforcement on public port 39145...");
+  console.log(`\n[6] Testing Token endpoint private_key_jwt enforcement on public port ${mcpPort}...`);
 
   // 6a. Negative test: 'none' auth method rejected for ChatGPT
   const tokenProbeNone = await fetch(`${publicOrigin}/api/auth/oauth2/token`, {
@@ -291,13 +249,15 @@ async function runLocalE2E() {
     }),
   });
   console.log(`  Forged assertion probe status: ${forgedRes.status}`);
-  if (forgedRes.status !== 400 && forgedRes.status !== 401) {
+  const forgedBody = await forgedRes.json();
+  if (![400, 401].includes(forgedRes.status) || forgedBody.error !== "invalid_client" ||
+      forgedBody.error_description !== "client assertion signature verification failed") {
     throw new Error(`Expected 400/401 for forged client assertion, got ${forgedRes.status}`);
   }
   console.log("  ✓ Untrusted client assertion correctly rejected fail-closed (not in ChatGPT JWKS)");
 
   // 7. Revocation
-  console.log("\n[7] Testing Revocation on private owner port 39146...");
+  console.log(`\n[7] Testing Revocation on private owner port ${ownerPort}...`);
   const revokeGrantRes = await fetch(`${ownerOrigin}/oauth/grants/revoke`, {
     method: "POST",
     headers: {
@@ -341,6 +301,7 @@ async function runLocalE2E() {
       path: "/mcp",
       method: "POST",
       headers: { host: "spoofed-host.example:39145" },
+      signal: AbortSignal.any([lifecycle.signal, AbortSignal.timeout(15_000)]),
     }, (res) => {
       res.resume();
       res.on("end", () => resolve(res.statusCode));
@@ -382,189 +343,11 @@ async function runLocalE2E() {
   }
   console.log("  ✓ All private owner endpoints fail closed / 404 on public port");
 
-  // 10g. Isolate PKCE verifier mismatch using native client under active grant
-  console.log("  Testing PKCE verifier mismatch isolation with native client...");
-  const db = new DatabaseSync(path.join(authDir, "auth.sqlite"));
-  const nativeClientId = "native-pkce-probe-client";
-  const nativeRedirectUri = "http://127.0.0.1:49152/callback";
-  db.prepare(`
-    INSERT OR REPLACE INTO oauthClient (
-      id, clientId, name, redirectUris, tokenEndpointAuthMethod, applicationType,
-      grantTypes, responseTypes, requirePKCE, createdAt, updatedAt
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-  `).run(
-    nativeClientId,
-    nativeClientId,
-    "Native PKCE Probe Client",
-    JSON.stringify([nativeRedirectUri]),
-    "none",
-    "native",
-    JSON.stringify(["authorization_code", "refresh_token"]),
-    JSON.stringify(["code"]),
-    1,
-  );
-
-  db.prepare(`
-    INSERT OR REPLACE INTO oauthClientResource (id, clientId, resourceId, createdAt)
-    VALUES (?, ?, ?, datetime('now'))
-  `).run(
-    "native-client-resource-link",
-    nativeClientId,
-    `${publicOrigin}/mcp`,
-  );
-  db.close();
-
-  // Authorize initiate with PKCE S256 challenge
-  const probeVerifier = randomBytes(32).toString("base64url");
-  const probeChallenge = createHash("sha256").update(probeVerifier).digest("base64url");
-  const probeState = randomBytes(16).toString("base64url");
-
-  const probeAuthParams = new URLSearchParams({
-    client_id: nativeClientId,
-    redirect_uri: nativeRedirectUri,
-    response_type: "code",
-    scope: "vault:read offline_access",
-    resource: `${publicOrigin}/mcp`,
-    state: probeState,
-    prompt: "consent",
-    code_challenge: probeChallenge,
-    code_challenge_method: "S256",
+  // Exercise a pre-provisioned native client, independently of ChatGPT's keys.
+  await verifyNativeFlow({
+    lifecycle, authDirectory: authDir, publicOrigin, ownerOrigin, cookie: sessionCookie,
+    notePath: "Notes/Welcome.md", deniedPath: "Secret/Confidential.md", expectedContent: "permitted content",
   });
-
-  const probeAuthRes = await fetch(`${publicOrigin}/api/auth/oauth2/authorize?${probeAuthParams}`, {
-    headers: { accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" },
-    redirect: "manual",
-  });
-  if (probeAuthRes.status !== 302) {
-    throw new Error(`Expected 302 for native client authorize, got ${probeAuthRes.status}`);
-  }
-  const probeRedirectUrl = new URL(probeAuthRes.headers.get("location"));
-  const probeOauthQuery = probeRedirectUrl.search.slice(1);
-
-  // Resume and create grant on owner port
-  await fetch(`${ownerOrigin}/oauth/authorize`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-vaultbridge-csrf": "1",
-      origin: ownerOrigin,
-      cookie: sessionCookie,
-    },
-    body: JSON.stringify({ oauth_query: probeOauthQuery }),
-  });
-
-  const probeGrantRes = await fetch(`${ownerOrigin}/oauth/grants`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-vaultbridge-csrf": "1",
-      origin: ownerOrigin,
-      cookie: sessionCookie,
-    },
-    body: JSON.stringify({
-      oauth_query: probeOauthQuery,
-      principalPermissions: [{ path: "Notes", actions: ["readNote", "listFiles"] }],
-      clientPermissions: [{ path: "Notes", actions: ["readNote", "listFiles"], tools: ["obsidian_read_note", "obsidian_list_files"] }],
-    }),
-  });
-  if (probeGrantRes.status !== 200) {
-    throw new Error(`Failed to create grant for native PKCE probe: status ${probeGrantRes.status}`);
-  }
-
-  // Consent approval yielding fresh valid code
-  const probeConsentRes = await fetch(`${ownerOrigin}/oauth/consent`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-vaultbridge-csrf": "1",
-      origin: ownerOrigin,
-      cookie: sessionCookie,
-    },
-    body: JSON.stringify({ oauth_query: probeOauthQuery, accept: true }),
-  });
-  if (probeConsentRes.status !== 200) {
-    throw new Error(`Failed consent approval for native PKCE probe: status ${probeConsentRes.status}`);
-  }
-  const probeConsentBody = await probeConsentRes.json();
-  const probeCallbackUrl = new URL(probeConsentBody.url);
-  const probeValidCode = probeCallbackUrl.searchParams.get("code");
-  if (!probeValidCode) throw new Error("No authorization code in consent callback");
-
-  // Exchange with invalid verifier: changing ONLY the verifier under valid client and active grant
-  const invalidPkceRes = await fetch(`${publicOrigin}/api/auth/oauth2/token`, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: nativeClientId,
-      grant_type: "authorization_code",
-      code: probeValidCode,
-      code_verifier: "wrong-verifier-123456789012345678901234567890",
-      redirect_uri: nativeRedirectUri,
-      resource: `${publicOrigin}/mcp`,
-    }),
-  });
-  console.log(`  Invalid PKCE token exchange status: ${invalidPkceRes.status} (expected 400)`);
-  const invalidPkceBody = await invalidPkceRes.json();
-  console.log(`  Invalid PKCE error body: ${JSON.stringify(invalidPkceBody)}`);
-  if (
-    invalidPkceRes.status !== 400 ||
-    invalidPkceBody.error !== "invalid_grant" ||
-    !invalidPkceBody.error_description?.includes("code verification failed")
-  ) {
-    throw new Error(
-      `Expected 400 invalid_grant with 'code verification failed', got status ${invalidPkceRes.status}: ${JSON.stringify(invalidPkceBody)}`
-    );
-  }
-  console.log("  ✓ PKCE verifier mismatch strictly isolated: rejected fail-closed with 'code verification failed'");
-
-  // Obtain another fresh valid code and exchange with the matching verifier to prove it succeeds
-  const matchVerifier = randomBytes(32).toString("base64url");
-  const matchChallenge = createHash("sha256").update(matchVerifier).digest("base64url");
-  const matchAuthParams = new URLSearchParams({
-    client_id: nativeClientId,
-    redirect_uri: nativeRedirectUri,
-    response_type: "code",
-    scope: "vault:read offline_access",
-    resource: `${publicOrigin}/mcp`,
-    state: randomBytes(16).toString("base64url"),
-    prompt: "consent",
-    code_challenge: matchChallenge,
-    code_challenge_method: "S256",
-  });
-  const matchAuthRes = await fetch(`${publicOrigin}/api/auth/oauth2/authorize?${matchAuthParams}`, {
-    headers: { accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" },
-    redirect: "manual",
-  });
-  const matchOauthQuery = new URL(matchAuthRes.headers.get("location")).search.slice(1);
-  const matchConsentRes = await fetch(`${ownerOrigin}/oauth/consent`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-vaultbridge-csrf": "1",
-      origin: ownerOrigin,
-      cookie: sessionCookie,
-    },
-    body: JSON.stringify({ oauth_query: matchOauthQuery, accept: true }),
-  });
-  const matchCode = new URL((await matchConsentRes.json()).url).searchParams.get("code");
-  const matchTokenRes = await fetch(`${publicOrigin}/api/auth/oauth2/token`, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: nativeClientId,
-      grant_type: "authorization_code",
-      code: matchCode,
-      code_verifier: matchVerifier,
-      redirect_uri: nativeRedirectUri,
-      resource: `${publicOrigin}/mcp`,
-    }),
-  });
-  console.log(`  Matching PKCE token exchange status: ${matchTokenRes.status} (expected 200)`);
-  const matchTokenBody = await matchTokenRes.json();
-  if (matchTokenRes.status !== 200 || !matchTokenBody.access_token) {
-    throw new Error(`Expected 200 with access_token for valid PKCE exchange, got ${matchTokenRes.status}`);
-  }
-  console.log("  ✓ Matching PKCE exchange succeeds: access_token issued successfully");
 
   console.log("  ✓ Negative security verifications PASSED");
 
@@ -573,26 +356,21 @@ async function runLocalE2E() {
   console.log("======================================================================");
   console.log("401 WWW-Authenticate Challenge:           PASS");
   console.log("Public-Origin Consistent Discovery:        PASS");
-  console.log("Authorize 302 Redirect to Loopback:        PASS (http://127.0.0.1:39146/login)");
+  console.log(`Authorize 302 Redirect to Loopback:        PASS (http://127.0.0.1:${ownerPort}/login)`);
   console.log("Local Owner Sign-In & Scoped Consent:      PASS");
-  console.log("ChatGPT CIMD Fetch & Redirect URI Match:   PASS (https://chatgpt.com/oauth/client.json)");
+  console.log("ChatGPT-shaped authorize/callback:         PASS (provider diagnostic, not a real client)");
   console.log("Enforce RFC 7523 private_key_jwt:          PASS (client cannot use 'none')");
   console.log("Reject Forged Client Assertion:            PASS (untrusted key fails closed)");
   console.log("PKCE S256 Verifier Mismatch Isolated:      PASS (code verification failed)");
   console.log("PKCE S256 Valid Exchange (Native Client):  PASS (access_token issued)");
-  console.log("Private Owner Port 39146 Isolation:        PASS (never exposed externally)");
+  console.log(`Private Owner Port ${ownerPort} Isolation:        PASS (never exposed externally)`);
   console.log("CSRF & Origin Defense on Owner Port:       PASS");
   console.log("Host, Origin & Compression on Public Port: PASS");
   console.log("----------------------------------------------------------------------");
-  console.log("Simulated ChatGPT private_key_jwt Flow:    PASS (verified in Vitest suite)");
-  console.log("Live External ChatGPT Connector Flow:      BLOCKED (no developer connector entitlement)");
+  console.log("Simulated ChatGPT private_key_jwt Flow:    NOT RUN here (run Vitest separately)");
+  console.log("Native client MCP/Refresh/Revocation:       PASS (this run)");
+  console.log("Live External ChatGPT Connector Flow:      NOT RUN (requires a real ChatGPT browser/connector session)");
   console.log("======================================================================");
 }
 
-runLocalE2E().then(async () => {
-  await cleanup();
-}).catch(async (err) => {
-  console.error("FATAL ERROR in local E2E:", err);
-  await cleanup();
-  process.exit(1);
-});
+await runE2E(runLocalE2E);

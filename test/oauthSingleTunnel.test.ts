@@ -8,6 +8,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { generateKeyPair, exportJWK, SignJWT } from "jose";
 
 import { clientA, oauthHarness, password, redirectUri } from "./oauthHelpers.js";
+import { E2ELifecycle } from "../scripts/e2eLifecycle.js";
+import { verifyNativeFlow } from "../scripts/e2eNativeFlow.js";
 
 let chatGptJwks: { keys: Record<string, unknown>[] } = { keys: [] };
 
@@ -70,6 +72,15 @@ async function setupSingleTunnel(overrides: Record<string, unknown> = {}) {
 }
 
 describe("AUTH-005A Single Tunnel OAuth Architecture (39145 public / 39146 private owner)", () => {
+  it("runs the same positive native-client probes used by both CLI scripts", async () => {
+    const h = await setupSingleTunnel();
+    await verifyNativeFlow({
+      lifecycle: new E2ELifecycle(), authDirectory: h.directory,
+      publicOrigin: h.origin, ownerOrigin: h.ownerOrigin, cookie: h.cookie,
+      notePath: "Notes/Doc.md", deniedPath: "Secret/Denied.md", expectedContent: "Permitted content",
+    });
+  });
+
   it("enforces 401 challenge with public-origin resource metadata on unauthenticated /mcp access", async () => {
     const h = await setupSingleTunnel();
     const challengeRes = await fetch(`${h.origin}/mcp`, {
@@ -289,6 +300,14 @@ describe("AUTH-005A Single Tunnel OAuth Architecture (39145 public / 39146 priva
 
   it("never exposes private owner UI or admin API routes on the public port", async () => {
     const h = await setupSingleTunnel();
+    const pending = await h.consent();
+    const grant = await h.post("/oauth/grants", {
+      oauth_query: pending.query,
+      principalPermissions: [{ path: "Notes", actions: ["readNote"] }],
+      clientPermissions: [{ path: "Notes", actions: ["readNote"], tools: ["obsidian_read_note"] }],
+    }, h.cookie);
+    expect(grant.status).toBe(200);
+    const tokens = await h.exchange(await h.grant());
 
     const privateRoutes = [
       "/login",
@@ -314,6 +333,21 @@ describe("AUTH-005A Single Tunnel OAuth Architecture (39145 public / 39146 priva
         body: JSON.stringify({}),
       });
       expect([401, 404]).toContain(postRes.status);
+
+      // A forwarded owner endpoint must not hide behind its own session/CSRF
+      // checks. Even valid owner AND MCP credentials cannot make it available.
+      for (const method of ["GET", "POST"]) {
+        const authenticated = await fetch(`${h.origin}${route}`, {
+          method, redirect: "manual",
+          headers: {
+            authorization: `Bearer ${tokens.access_token}`,
+            cookie: h.cookie, "x-vaultbridge-csrf": "1", origin: h.origin,
+            "content-type": "application/json",
+          },
+          ...(method === "POST" ? { body: "{}" } : {}),
+        });
+        expect(authenticated.status, `${method} ${route} with valid credentials`).toBe(404);
+      }
     }
   });
 
@@ -407,6 +441,35 @@ describe("AUTH-005A Single Tunnel OAuth Architecture (39145 public / 39146 priva
     expect(body.error_description).toContain("code verification failed");
   });
 
+  it("requires a verifier for a valid native-client authorization code", async () => {
+    const h = await setupSingleTunnel();
+    const code = await h.grant();
+    const response = await h.form("token", {
+      grant_type: "authorization_code", code: code.code, redirect_uri: redirectUri,
+      resource: `${h.origin}/mcp`,
+    });
+    expect(response.status).toBe(400);
+    const body = await response.json() as { error: string; error_description: string };
+    expect(body.error).toBe("invalid_request");
+    expect(body.error_description).toContain("code_verifier");
+    // Same code succeeds when ONLY the missing verifier is restored.
+    expect((await h.exchange(code)).access_token).toBeTruthy();
+  });
+
+  it.each(["*", "/"])("rejects a root grant (%s) with otherwise valid owner authorization", async (root) => {
+    const h = await setupSingleTunnel();
+    const pending = await h.consent();
+    const response = await h.post("/oauth/grants", {
+      oauth_query: pending.query,
+      principalPermissions: [{ path: root, actions: ["readNote"] }],
+      clientPermissions: [{ path: root, actions: ["readNote"], tools: ["obsidian_read_note"] }],
+    }, h.cookie);
+    expect(response.status).toBe(400);
+    const listing = await fetch(`${h.ownerOrigin}/oauth/grants`, { headers: { cookie: h.cookie } });
+    expect(listing.status).toBe(200);
+    expect((await listing.json() as { grants: unknown[] }).grants).toEqual([]);
+  });
+
   it("authenticates simulated ChatGPT client using RFC 7523 private_key_jwt assertions without bypass", async () => {
     const h = await setupSingleTunnel();
 
@@ -488,7 +551,9 @@ describe("AUTH-005A Single Tunnel OAuth Architecture (39145 public / 39146 priva
     // 5. Negative test: Attempting exchange with forged key assertion must fail
     const { privateKey: attackerKey } = await generateKeyPair("RS256");
     const forgedAssertion = await new SignJWT({})
-      .setProtectedHeader({ alg: "RS256", kid: "attacker-key" })
+      // Match the trusted key ID so this isolates signature validation rather
+      // than merely failing key lookup.
+      .setProtectedHeader({ alg: "RS256", kid: "chatgpt-simulated-key-1" })
       .setIssuer(chatGptClientId)
       .setSubject(chatGptClientId)
       .setAudience([`${h.origin}/api/auth/oauth2/token`])
@@ -512,6 +577,9 @@ describe("AUTH-005A Single Tunnel OAuth Architecture (39145 public / 39146 priva
       }),
     });
     expect([400, 401]).toContain(forgedRes.status);
+    expect(await forgedRes.json()).toMatchObject({
+      error: "invalid_client", error_description: "client assertion signature verification failed",
+    });
 
     // 5b. Negative test: Mismatched audience must fail
     const wrongAudAssertion = await new SignJWT({})
@@ -539,6 +607,9 @@ describe("AUTH-005A Single Tunnel OAuth Architecture (39145 public / 39146 priva
       }),
     });
     expect([400, 401]).toContain(wrongAudRes.status);
+    expect(await wrongAudRes.json()).toMatchObject({
+      error: "invalid_client", error_description: "client assertion signature verification failed",
+    });
 
     // 5c. Negative test: Expired assertion must fail
     const expiredAssertion = await new SignJWT({})
@@ -566,6 +637,9 @@ describe("AUTH-005A Single Tunnel OAuth Architecture (39145 public / 39146 priva
       }),
     });
     expect([400, 401]).toContain(expiredRes.status);
+    expect(await expiredRes.json()).toMatchObject({
+      error: "invalid_client", error_description: "client assertion signature verification failed",
+    });
 
     // 6. Positive test: Valid client assertion signed with ChatGPT's simulated private key
     const validJti = randomUUID();

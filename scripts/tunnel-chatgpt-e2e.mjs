@@ -7,46 +7,12 @@ import { generateKeyPair, SignJWT } from "jose";
 
 import { startHttpServer } from "../src/http.js";
 import { makeConfig } from "../test/helpers.js";
+import { runE2E } from "./e2eLifecycle.js";
+import { verifyNativeFlow } from "./e2eNativeFlow.js";
+import { verifyDiscovery } from "./e2eDiscovery.js";
 
-let cf = null;
-let server = null;
-let tempDir = null;
-let isCleaningUp = false;
-
-async function cleanup() {
-  if (isCleaningUp) return;
-  isCleaningUp = true;
-  console.log("\n[cleanup] Cleaning up processes and temporary resources...");
-  if (server) {
-    try { await server.close(); } catch (err) { console.error("[cleanup] Error closing server:", err.message); }
-  }
-  if (cf && !cf.killed) {
-    try {
-      cf.kill("SIGTERM");
-      setTimeout(() => {
-        try { if (cf && !cf.killed) cf.kill("SIGKILL"); } catch {}
-      }, 500);
-    } catch (err) { console.error("[cleanup] Error terminating cloudflared:", err.message); }
-  }
-  if (tempDir) {
-    try { await fs.rm(tempDir, { recursive: true, force: true }); } catch (err) { console.error("[cleanup] Error removing tempDir:", err.message); }
-  }
-  console.log("[cleanup] Done.");
-}
-
-process.on("SIGINT", async () => {
-  console.log("\nReceived SIGINT. Initiating graceful shutdown...");
-  await cleanup();
-  process.exit(130);
-});
-
-process.on("SIGTERM", async () => {
-  console.log("\nReceived SIGTERM. Initiating graceful shutdown...");
-  await cleanup();
-  process.exit(143);
-});
-
-async function main() {
+async function main(lifecycle) {
+  const fetch = lifecycle.fetch;
   console.log("=== STARTING AUTH-005A CLOUDFLARE TUNNEL & CHATGPT E2E TEST ===");
 
   const mcpPort = Number(process.env.MCP_PORT) || 39145;
@@ -58,38 +24,48 @@ async function main() {
 
   if (!tunnelUrl) {
     console.log(`Starting cloudflared tunnel to http://127.0.0.1:${mcpPort}...`);
-    cf = spawn("cloudflared", ["tunnel", "--url", `http://127.0.0.1:${mcpPort}`], {
+    const cf = lifecycle.useChild(spawn("cloudflared", ["tunnel", "--url", `http://127.0.0.1:${mcpPort}`], {
       detached: false,
       stdio: ["ignore", "pipe", "pipe"],
-    });
+    }));
 
     tunnelUrl = await new Promise((resolve, reject) => {
+      const finish = (error, url) => {
+        clearTimeout(timer);
+        cf.stdout?.off("data", onData);
+        cf.stderr?.off("data", onData);
+        cf.off("error", onError);
+        cf.off("exit", onExit);
+        lifecycle.signal.removeEventListener("abort", onAbort);
+        if (error) reject(error);
+        else resolve(url);
+      };
+      const onError = (error) => finish(error);
+      const onExit = (code) => finish(new Error(`cloudflared exited before URL discovery with code ${code}`));
+      const onAbort = () => finish(lifecycle.signal.reason);
       const timer = setTimeout(() => {
-        if (cf && !cf.killed) cf.kill();
-        reject(new Error("Timeout waiting for trycloudflare tunnel URL from process stdio"));
+        finish(new Error("Timeout waiting for trycloudflare tunnel URL from process stdio"));
       }, 30000);
 
+      let output = "";
       const onData = (chunk) => {
-        const text = chunk.toString();
-        const match = text.match(/https:\/\/[-a-zA-Z0-9.]*\.trycloudflare\.com/);
+        output = (output + chunk.toString()).slice(-8192);
+        const match = output.match(/https:\/\/[-a-zA-Z0-9.]*\.trycloudflare\.com/);
         if (match) {
-          clearTimeout(timer);
-          cf?.stdout?.off("data", onData);
-          cf?.stderr?.off("data", onData);
-          resolve(match[0]);
+          finish(null, match[0]);
         }
       };
 
       cf.stdout?.on("data", onData);
       cf.stderr?.on("data", onData);
-      cf.on("error", (err) => {
-        clearTimeout(timer);
-        reject(err);
-      });
-      cf.on("exit", (code) => {
-        clearTimeout(timer);
-        reject(new Error(`cloudflared exited unexpectedly with code ${code}`));
-      });
+      cf.once("error", onError);
+      cf.once("exit", onExit);
+      lifecycle.signal.addEventListener("abort", onAbort, { once: true });
+      if (lifecycle.signal.aborted) onAbort();
+    });
+    cf.once("error", (error) => { lifecycle.controller.abort(error); });
+    cf.once("exit", (code, signal) => {
+      lifecycle.controller.abort(new Error(`cloudflared exited unexpectedly: ${code ?? signal}`));
     });
   }
 
@@ -110,7 +86,7 @@ async function main() {
       dnsReady = true;
       break;
     } catch {
-      await new Promise((r) => setTimeout(r, 1000));
+      await lifecycle.wait(1000);
     }
   }
   if (!dnsReady) {
@@ -119,7 +95,8 @@ async function main() {
     console.log("✓ Cloudflare DNS is propagated and reachable");
   }
 
-  tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "vaultbridge-tunnel-"));
+  const tempDir = lifecycle.useDirectory(await fs.mkdtemp(path.join(os.tmpdir(), "vaultbridge-tunnel-")));
+  console.log(`Disposable resources: ${tempDir}`);
   const vaultPath = path.join(tempDir, "disposable-vault");
   const authDir = path.join(tempDir, "auth-data");
   const cacheDir = path.join(tempDir, "cache-data");
@@ -150,7 +127,8 @@ async function main() {
     mcpOwnerPassword: ownerPassword,
   });
 
-  server = await startHttpServer(config);
+  lifecycle.useServer(await startHttpServer(config));
+  lifecycle.signal.throwIfAborted();
   console.log("✓ VaultBridge server started with canonical tunnel configuration");
 
   // 1. External HTTPS 401 challenge
@@ -169,35 +147,9 @@ async function main() {
   }
   console.log("  ✓ External HTTPS 401 challenge PASSED (public-origin consistent)");
 
-  // 2. External HTTPS Metadata Discovery
-  console.log(`\n[2] Testing external HTTPS discovery endpoints...`);
-  const resourceMetaRes = await fetch(`${tunnelUrl}/.well-known/oauth-protected-resource/mcp`);
-  console.log(`  Protected resource metadata status: ${resourceMetaRes.status}`);
-  const resourceMeta = await resourceMetaRes.json();
-  console.log(`  Resource: ${resourceMeta.resource}`);
-  console.log(`  Authorization servers: ${JSON.stringify(resourceMeta.authorization_servers)}`);
-  if (resourceMeta.resource !== `${tunnelUrl}/mcp` || resourceMeta.authorization_servers[0] !== `${tunnelUrl}/api/auth`) {
-    throw new Error("Protected resource metadata is not public-origin consistent");
-  }
-
-  const authServerMetaRes = await fetch(`${tunnelUrl}/api/auth/.well-known/oauth-authorization-server`);
-  console.log(`  Authorization server metadata status: ${authServerMetaRes.status}`);
-  const authServerMeta = await authServerMetaRes.json();
-  console.log(`  Issuer: ${authServerMeta.issuer}`);
-  console.log(`  Authorization endpoint: ${authServerMeta.authorization_endpoint}`);
-  console.log(`  Token endpoint: ${authServerMeta.token_endpoint}`);
-  console.log(`  Revocation endpoint: ${authServerMeta.revocation_endpoint}`);
-  if (authServerMeta.issuer !== `${tunnelUrl}/api/auth` ||
-      authServerMeta.authorization_endpoint !== `${tunnelUrl}/api/auth/oauth2/authorize` ||
-      authServerMeta.token_endpoint !== `${tunnelUrl}/api/auth/oauth2/token`) {
-    throw new Error("Authorization server metadata is not public-origin consistent");
-  }
-
-  // Verify RFC 8414 path as well
-  const rfc8414Res = await fetch(`${tunnelUrl}/.well-known/oauth-authorization-server/api/auth`);
-  console.log(`  RFC 8414 metadata status: ${rfc8414Res.status}`);
-  if (rfc8414Res.status !== 200) throw new Error("RFC 8414 discovery endpoint failed");
-  console.log("  ✓ Discovery endpoints are strictly public-origin consistent (no localhost leak)");
+  // 2. Validate protected-resource metadata and both authorization aliases.
+  await verifyDiscovery(fetch, tunnelUrl, ownerOrigin);
+  console.log("  ✓ Both discovery aliases use the canonical public origin with no owner leak");
 
   // 3. ChatGPT Authorize Initiate via Tunnel
   console.log(`\n[3] Testing ChatGPT authorize initiate via tunnel with real CIMD fetch...`);
@@ -225,17 +177,17 @@ async function main() {
   });
   console.log(`  Authorize status: ${authorizeRes.status}`);
   const location = authorizeRes.headers.get("location");
-  console.log(`  Redirect Location: ${location}`);
+  console.log(`  Redirect Location: ${location?.split(/[?#]/, 1)[0]}`);
   if (authorizeRes.status !== 302 || !location?.startsWith(`${ownerOrigin}/login`)) {
-    throw new Error(`Expected 302 redirect to local owner login, got ${authorizeRes.status}: ${location}`);
+    throw new Error(`Expected 302 redirect to local owner login, got ${authorizeRes.status}: ${location?.split(/[?#]/, 1)[0]}`);
   }
-  console.log("  ✓ Authorize redirected to private loopback 127.0.0.1:39146/login");
+  console.log(`  ✓ Authorize redirected to private loopback 127.0.0.1:${ownerPort}/login`);
 
   const redirectUrl = new URL(location);
   const oauthQuery = redirectUrl.search.slice(1);
 
   // 4. Local Owner Login on private port 39146
-  console.log("\n[4] Testing Local Owner Login on private port 39146...");
+  console.log(`\n[4] Testing Local Owner Login on private port ${ownerPort}...`);
   const loginRes = await fetch(`${ownerOrigin}/api/auth/sign-in/email`, {
     method: "POST",
     headers: {
@@ -251,7 +203,7 @@ async function main() {
   console.log("  ✓ Owner login succeeded, private session cookie obtained");
 
   // 5. Consent and Grant Management on private port 39146
-  console.log("\n[5] Testing Consent and Grant creation on private port 39146...");
+  console.log(`\n[5] Testing Consent and Grant creation on private port ${ownerPort}...`);
   const resumeRes = await fetch(`${ownerOrigin}/oauth/authorize`, {
     method: "POST",
     headers: {
@@ -263,8 +215,9 @@ async function main() {
     body: JSON.stringify({ oauth_query: oauthQuery }),
   });
   console.log(`  Resume status: ${resumeRes.status}`);
+  if (resumeRes.status !== 200) throw new Error(`Resume failed: ${resumeRes.status}`);
   const resumeBody = await resumeRes.json();
-  console.log(`  Consent page URL: ${resumeBody.url}`);
+  console.log(`  Consent page URL: ${resumeBody.url?.split(/[?#]/, 1)[0]}`);
 
   // Grant restricted to Notes subtree
   const grantRes = await fetch(`${ownerOrigin}/oauth/grants`, {
@@ -281,7 +234,9 @@ async function main() {
       clientPermissions: [{ path: "Notes", actions: ["readNote", "listFiles"], tools: ["obsidian_read_note", "obsidian_list_files"] }],
     }),
   });
+  if (grantRes.status !== 200) throw new Error(`Grant failed: ${grantRes.status}`);
   const grantData = await grantRes.json();
+  if (!grantData.grantId) throw new Error("Missing grant ID");
   console.log(`  Grant creation status: ${grantRes.status}, Grant ID: ${grantData.grantId}`);
 
   // Approve consent
@@ -295,17 +250,18 @@ async function main() {
     },
     body: JSON.stringify({ oauth_query: oauthQuery, accept: true }),
   });
+  if (consentRes.status !== 200) throw new Error(`Consent failed: ${consentRes.status}`);
   const consentData = await consentRes.json();
   console.log(`  Consent status: ${consentRes.status}`);
-  console.log(`  Callback URL: ${consentData.url}`);
+  console.log(`  Callback destination: ${new URL(consentData.url).origin}${new URL(consentData.url).pathname}`);
   const callbackUrl = new URL(consentData.url);
   const authCode = callbackUrl.searchParams.get("code");
   const callbackState = callbackUrl.searchParams.get("state");
   const callbackIss = callbackUrl.searchParams.get("iss");
-  console.log(`  Code: ${authCode ? `${authCode.slice(0, 10)}...` : "none"}`);
+  console.log(`  Code: ${authCode ? "received (redacted)" : "none"}`);
   console.log(`  State match: ${callbackState === state}`);
   console.log(`  Callback iss: ${callbackIss}`);
-  if (callbackIss !== `${tunnelUrl}/api/auth` || !authCode || callbackState !== state) {
+  if (callbackUrl.origin + callbackUrl.pathname !== chatGptRedirectUri || callbackIss !== `${tunnelUrl}/api/auth` || !authCode || callbackState !== state) {
     throw new Error("Callback does not match expected canonical parameters");
   }
   console.log("  ✓ Callback generated with canonical tunnel issuer and valid auth code");
@@ -361,7 +317,9 @@ async function main() {
     }),
   });
   console.log(`  Forged assertion probe status: ${forgedRes.status}`);
-  if (forgedRes.status !== 400 && forgedRes.status !== 401) {
+  const forgedBody = await forgedRes.json();
+  if (![400, 401].includes(forgedRes.status) || forgedBody.error !== "invalid_client" ||
+      forgedBody.error_description !== "client assertion signature verification failed") {
     throw new Error(`Expected 400/401 for forged client assertion, got ${forgedRes.status}`);
   }
   console.log("  ✓ Untrusted client assertion correctly rejected fail-closed (not in ChatGPT JWKS)");
@@ -429,37 +387,38 @@ async function main() {
 
   console.log("  ✓ Boundary controls PASSED");
 
+  // Positive client traffic must actually traverse the public HTTPS tunnel.
+  await verifyNativeFlow({
+    lifecycle, authDirectory: authDir, publicOrigin: tunnelUrl, ownerOrigin, cookie: sessionCookie,
+    notePath: "Notes/Test.md", deniedPath: "Secret/Hidden.md", expectedContent: "Verified via Cloudflare tunnel",
+  });
+
   // Summary Report
   console.log("\n======================================================================");
   console.log("AUTH-005A TUNNEL & CHATGPT E2E VERIFICATION STATUS");
   console.log("======================================================================");
   console.log("401 WWW-Authenticate Challenge:           PASS");
   console.log("Public-Origin Consistent Discovery:        PASS");
-  console.log("Authorize 302 Redirect to Loopback:        PASS (http://127.0.0.1:39146/login)");
+  console.log(`Authorize 302 Redirect to Loopback:        PASS (http://127.0.0.1:${ownerPort}/login)`);
   console.log("Local Owner Sign-In & Scoped Consent:      PASS");
-  console.log("ChatGPT CIMD Fetch & Redirect URI Match:   PASS (https://chatgpt.com/oauth/client.json)");
+  console.log("ChatGPT-shaped authorize/callback:         PASS (provider diagnostic, not a real client)");
   console.log("Enforce RFC 7523 private_key_jwt:          PASS (client cannot use 'none')");
   console.log("Reject Forged Client Assertion:            PASS (untrusted key fails closed)");
-  console.log("Private Owner Port 39146 Isolation:        PASS (never exposed externally)");
+  console.log(`Private Owner Port ${ownerPort} Isolation:        PASS (never exposed externally)`);
   console.log("CSRF & Origin Defense on Owner Port:       PASS");
-  console.log("Host, Origin & Compression on Public Port: PASS");
+  console.log("Origin & Compression via Public Tunnel:    PASS");
   console.log("----------------------------------------------------------------------");
-  console.log("Simulated ChatGPT private_key_jwt Flow:    PASS (verified in Vitest suite)");
-  console.log("Live External ChatGPT Connector Flow:      BLOCKED (no developer connector entitlement)");
+  console.log("Simulated ChatGPT private_key_jwt Flow:    NOT RUN here (run Vitest separately)");
+  console.log("HTTPS native MCP/Refresh/Revocation:       PASS (this run)");
+  console.log("Live External ChatGPT Connector Flow:      NOT RUN (requires a real ChatGPT browser/connector session)");
   console.log("======================================================================");
 
   if (process.argv.includes("--keep-alive")) {
     console.log("\n[--keep-alive] Keeping tunnel open indefinitely. Press Ctrl+C to terminate.");
     console.log(`Public MCP URL: ${tunnelUrl}/mcp`);
-    console.log(`Owner Login:    http://127.0.0.1:39146/login`);
-    await new Promise(() => {}); // wait until SIGINT
+    console.log(`Owner Login:    http://127.0.0.1:${ownerPort}/login`);
+    await lifecycle.waitForAbort();
   }
 }
 
-main().then(async () => {
-  await cleanup();
-}).catch(async (err) => {
-  console.error("Tunnel test error:", err);
-  await cleanup();
-  process.exit(1);
-});
+await runE2E(main);
