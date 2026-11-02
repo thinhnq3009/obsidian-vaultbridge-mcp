@@ -415,6 +415,37 @@ active responses to 32, connections to 128 and requests/socket to 100. Header,
 body and keep-alive timeouts are 10/30/5 seconds; SSE response streams have no
 fixed duration. Use separate instances for clients needing larger shared budgets.
 
+#### HTTP and OAuth diagnostics
+
+The public HTTP listener writes one completion line per request to **stderr**,
+including requests rejected before MCP tool dispatch or OAuth discovery. Each
+response includes a server-generated `X-VaultBridge-Request-Id` matching its log:
+
+```text
+[obsidian-vault-mcp] http request=<uuid> time=<ISO timestamp> method=GET route=/.well-known/oauth-protected-resource/mcp host=canonical origin=absent status=200 stage=oauth_provider duration=2ms
+```
+
+`stage` identifies the last processing boundary: `host_validation`, `issuer_host`,
+`origin_validation`, `authentication`, `oauth_budget`, `oauth_body`,
+`oauth_provider`, `mcp_body`, `grant_authorization`, or `mcp_transport`
+(also `request_budget`, `content_encoding`, and `unmatched_route`).
+An interrupted response logs `status=aborted`. Only known endpoint paths and
+Host/Origin categories are logged; unknown paths become `<unmatched>`. Query
+strings, request/response bodies, raw headers, tokens, cookies, client identities
+and vault contents are not included in these HTTP diagnostics. Existing tool
+logs are separate.
+
+When debugging a tunnel, restart `npm run dev` after configuration changes and
+retry the connection while watching stderr. Once a request has completed or
+disconnected, a missing log line suggests it did not reach this listener's
+Express middleware, or you are watching another process's logs. Check the
+tunnel's upstream port/routes and its own access logs; requests still in flight
+will not yet have a completion line. A `403` at `issuer_host` with
+`host=loopback` suggests the tunnel rewrote Host instead of preserving the public
+issuer host. A `401` at `authentication` on an unauthenticated MCP request is the
+expected OAuth challenge; discovery should return `200` at `oauth_provider`.
+These logs cover the public listener, not the separate private owner UI.
+
 ## Request-scoped authorization foundation (AUTH-004 Phase A, unreleased)
 
 The internal Phase A authorization seam supports immutable test-trusted contexts,
