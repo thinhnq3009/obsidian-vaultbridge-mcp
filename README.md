@@ -54,7 +54,7 @@ npm run dev
 This dev launcher configures HTTP `127.0.0.1:39145/mcp`, issuer
 `http://127.0.0.1:39145/api/auth`, OAuth authorization, and a separate
 **local-only** owner UI at `http://127.0.0.1:39146/login`. It chooses a
-stable development vault ID, derives the Host allowlist from the issuer,
+stable ID derived from the canonical vault path, derives the Host allowlist from the issuer,
 and refuses missing owner credentials or non-loopback MCP bind addresses.
 First-time owner bootstrap uses the password in `.env`; it does **not**
 reset an existing owner. If your local owner was bootstrapped using the
