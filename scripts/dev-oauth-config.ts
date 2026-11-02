@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { loadConfig, loadDotEnvFile, parseCliArgs } from "../src/config.js";
 import type { AppConfig } from "../src/types.js";
 
@@ -32,9 +34,15 @@ export function createDevOauthConfig(source: NodeJS.ProcessEnv, argv: string[] =
     MCP_HTTP_PORT: port,
     MCP_OAUTH_ISSUER: issuer,
     MCP_ALLOWED_HOSTS: supplied.MCP_ALLOWED_HOSTS ?? issuerUrl.hostname,
-    MCP_VAULT_ID: supplied.MCP_VAULT_ID ?? "local-development-vault",
+    MCP_VAULT_ID: supplied.MCP_VAULT_ID ?? "resolve-from-vault",
   };
-  const config = loadConfig(configured, argv);
+  const loaded = loadConfig(configured, argv);
+  // The OAuth grant key includes vaultId but not the absolute vault directory.
+  // Derive a per-vault default to prevent reusing grants after changing VAULT_PATH.
+  const config: AppConfig = supplied.MCP_VAULT_ID ? loaded : {
+    ...loaded,
+    mcpVaultId: deriveDevVaultId(loaded.vaultPath!),
+  };
   if (config.mcpTransport !== "http" || config.mcpAuthMode !== "oauth" || !config.mcpOauthEnabled) {
     throw new Error("OAuth development configuration was overridden by incompatible CLI arguments.");
   }
@@ -51,4 +59,9 @@ export function createDevOauthConfig(source: NodeJS.ProcessEnv, argv: string[] =
     throw new Error("HTTPS tunnel OAuth requires explicit MCP_HTTP_TLS_PROXY=true and trusted TLS termination.");
   }
   return config;
+}
+
+function deriveDevVaultId(vaultPath: string): string {
+  const canonicalPath = realpathSync.native(vaultPath);
+  return `dev-${createHash("sha256").update("vaultbridge-dev-v1:").update(canonicalPath).digest("hex").slice(0, 32)}`;
 }
