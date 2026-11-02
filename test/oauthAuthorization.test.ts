@@ -10,6 +10,7 @@ import { pathActions } from "../src/auth/grants.js";
 import { clientA, clientB, oauthHarness, password } from "./oauthHelpers.js";
 import { createVerifiedAuthContext } from "../src/auth/requestContext.js";
 import { principalVerifier } from "../src/auth/oauth.js";
+import { verifyReadonlyTools } from "../scripts/e2eToolChecks.js";
 
 vi.mock("@better-auth/cimd/node", () => ({
   fetchClientMetadataResource: (input: string | URL) => {
@@ -65,11 +66,11 @@ async function provision(h: Harness, clientId: string, folder: string, write = f
   const tokens = await h.exchange({ code: callback.searchParams.get("code")!, verifier: pending.verifier }, clientId);
   return { ...tokens, grantId };
 }
-async function connect(h: Harness, token: string) {
+async function connect(h: Harness, token: string, scheme = "Bearer") {
   const client = new Client({ name: "live-scoped-oauth-test", version: "1" }); clients.push(client);
   await client.connect(new StreamableHTTPClientTransport(new URL(`${h.origin}/mcp`), {
     requestInit: { headers: {
-      authorization: `Bearer ${token}`, "x-client-id": "forged-client", "x-principal-id": "forged-owner",
+      authorization: `${scheme} ${token}`, "x-client-id": "forged-client", "x-principal-id": "forged-owner",
       "x-grant-id": "forged-grant", "x-vault-id": "other-vault",
     } },
   }));
@@ -77,6 +78,14 @@ async function connect(h: Harness, token: string) {
 }
 
 describe("AUTH-004 live verified OAuth → SQLite grant → request backend → MCP", () => {
+  it.each(["bearer", "BEARER"])("runs the strict read-only E2E probe with a %s scheme", async (scheme) => {
+    const h = await setup();
+    const token = await provision(h, clientA, "Notes");
+    const client = await connect(h, token.access_token, scheme);
+    await verifyReadonlyTools(client, {
+      notePath: "Notes/A.md", deniedPath: "Secret/A.md", expectedContent: "Notes private-body",
+    });
+  });
   it("rotates the default owner password before a fresh login and scoped read-only OAuth MCP access", async () => {
     const h = await setup(true);
     const token = await provision(h, clientA, "Notes");

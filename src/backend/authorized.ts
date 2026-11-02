@@ -40,14 +40,24 @@ class AuthorizedVaultBackend implements VaultBackend {
   public async runWithTool<T>(name: string, callback: () => Promise<T>): Promise<T> {
     // Admission also covers tool-level no-ops (e.g. rename to the same name).
     // Actual backend calls still enforce their exact action and paths.
-    const permitted = pathActions.some((action) => {
+    let admission: OperationAuthorization | undefined;
+    for (const action of pathActions) {
       try {
-        new OperationAuthorization(this.context, this.options.grants, this.options.vaultId, this.options.resource, name, action);
-        return true;
-      } catch { return false; }
-    });
-    if (!permitted) throw authorizationDenied();
-    return this.tool.run(name, callback);
+        admission = new OperationAuthorization(this.context, this.options.grants, this.options.vaultId, this.options.resource, name, action, this.options.verifyRequest);
+        break;
+      } catch { /* Try another explicitly granted action, never bypass revalidation. */ }
+    }
+    if (!admission) throw authorizationDenied();
+    const revalidate = async () => {
+      try { await admission.revalidate(); } catch {
+        // Provider failures must not leak token, grant or filesystem details.
+        throw authorizationDenied();
+      }
+    };
+    await revalidate();
+    const result = await this.tool.run(name, callback);
+    await revalidate();
+    return result;
   }
 
   private async invoke<T>(action: PathAction, execute: (backend: FilesystemVaultBackend) => Promise<T>): Promise<T> {

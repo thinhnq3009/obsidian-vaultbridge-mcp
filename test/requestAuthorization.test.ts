@@ -678,3 +678,33 @@ describe("MCP tool family integration", () => {
     } finally { await client.close(); await server.close(); }
   });
 });
+
+describe("AUTH-004 tool-level no-op revalidation", () => {
+  it("rejects a no-op before execution when provider revalidation fails", async () => {
+    const verifyRequest = vi.fn(() => Promise.reject(new Error("Access token revoked")));
+    const request = createRequestBackend(backend, { context: context(), grants, vaultId: "vault", resource, verifyRequest });
+    const callback = vi.fn(() => Promise.resolve("no-op success"));
+    await expect(run(request, "obsidian_read_note", callback)).rejects.toMatchObject({
+      code: "ACCESS_DENIED", message: "Request authorization denied.",
+    });
+    expect(callback).not.toHaveBeenCalled();
+    expect(verifyRequest).toHaveBeenCalled();
+  });
+
+  it("rejects a no-op whose grant was revoked during execution", async () => {
+    const request = scoped();
+    await expect(run(request, "obsidian_read_note", () => {
+      grants.revoke("grant-A");
+      return Promise.resolve("no-op success");
+    })).rejects.toThrow();
+  });
+
+  it("revalidates successful no-ops on both sides without masking callback errors", async () => {
+    const verifyRequest = vi.fn(() => Promise.resolve());
+    const request = createRequestBackend(backend, { context: context(), grants, vaultId: "vault", resource, verifyRequest });
+    await expect(run(request, "obsidian_read_note", () => Promise.resolve("success"))).resolves.toBe("success");
+    expect(verifyRequest).toHaveBeenCalledTimes(2);
+    const failure = new Error("Trusted callback failed");
+    await expect(run(request, "obsidian_read_note", () => Promise.reject(failure))).rejects.toBe(failure);
+  });
+});

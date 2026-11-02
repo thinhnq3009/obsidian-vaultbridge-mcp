@@ -5,6 +5,8 @@ import { DatabaseSync } from "node:sqlite";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
+import { verifyReadonlyTools } from "./e2eToolChecks.js";
+
 import type { E2ELifecycle } from "./e2eLifecycle.js";
 
 interface NativeFlowOptions {
@@ -132,19 +134,7 @@ export async function verifyNativeFlow(options: NativeFlowOptions): Promise<void
       await client.connect(new StreamableHTTPClientTransport(new URL(resource), {
         fetch, requestInit: { headers: { authorization: `Bearer ${accessToken}` } },
       }));
-      const allowed = await client.callTool({ name: "obsidian_read_note", arguments: { path: options.notePath } });
-      assert.notEqual(allowed.isError, true);
-      assert.ok(JSON.stringify(allowed).includes(options.expectedContent), "Allowed note content");
-      const denied = await client.callTool({ name: "obsidian_read_note", arguments: { path: options.deniedPath } });
-      assert.equal(denied.isError, true);
-      assert.match(JSON.stringify(denied), /ACCESS_DENIED/);
-      const write = await client.callTool({
-        name: "obsidian_write_note", arguments: { path: options.notePath, content: "must not write" },
-      });
-      assert.equal(write.isError, true);
-      const unchanged = await client.callTool({ name: "obsidian_read_note", arguments: { path: options.notePath } });
-      assert.notEqual(unchanged.isError, true);
-      assert.ok(JSON.stringify(unchanged).includes(options.expectedContent), "Denied write must not modify the note");
+      await verifyReadonlyTools(client, options);
     } finally {
       await client.close();
     }
