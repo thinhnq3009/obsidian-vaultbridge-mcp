@@ -1,0 +1,70 @@
+{
+  "viewports": [
+    {
+      "width": 1672,
+      "height": 941,
+      "rightOrStacked": true,
+      "noOverflow": true,
+      "axeViolations": 0
+    },
+    {
+      "width": 1440,
+      "height": 900,
+      "rightOrStacked": true,
+      "noOverflow": true,
+      "axeViolations": 0
+    },
+    {
+      "width": 1280,
+      "height": 800,
+      "rightOrStacked": true,
+      "noOverflow": true,
+      "axeViolations": 0
+    },
+    {
+      "width": 768,
+      "height": 1024,
+      "rightOrStacked": true,
+      "noOverflow": true,
+      "axeViolations": 0
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "rightOrStacked": true,
+      "noOverflow": true,
+      "axeViolations": 0
+    },
+    {
+      "width": 320,
+      "height": 700,
+      "rightOrStacked": true,
+      "noOverflow": true,
+      "axeViolations": 0
+    }
+  ],
+  "states": [
+    {
+      "state": "error",
+      "axeViolations": 0
+    },
+    {
+      "state": "rate-limited",
+      "axeViolations": 0
+    },
+    {
+      "state": "loading",
+      "axeViolations": 0
+    },
+    {
+      "state": "disabled",
+      "axeViolations": 0
+    },
+    {
+      "state": "expired",
+      "axeViolations": 0
+    }
+  ],
+  "network": "preview origin only; zero credential requests",
+  "errors": []
+}
