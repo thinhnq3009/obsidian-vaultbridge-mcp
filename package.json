@@ -37,7 +37,7 @@
     "lint": "eslint .",
     "test": "vitest run --coverage",
     "smoke:package": "tsx scripts/smoke-package.ts",
-    "smoke:oauth": "node --import tsx scripts/local-e2e.mjs"
+    "smoke:oauth": "tsx scripts/local-e2e.mjs"
   },
   "keywords": [
     "codex",
