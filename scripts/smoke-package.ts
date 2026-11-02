@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -53,6 +54,9 @@ try {
     for (const file of pack.files) {
       assert(file.path.startsWith("dist/") || ["package.json", "README.md", "MIGRATION.md", "CHANGELOG.md", "RELEASING.md", ".env.example"].includes(file.path), `Unexpected packed file: ${file.path}`);
     }
+    for (const entry of ["dist/owner-ui/index.html", "dist/owner-ui/assets/obsidian-crystal-login-bg.png", "dist/owner-ui/assets/vaultbridge-crystal-mark.png"]) {
+      assert(pack.files.some((file) => file.path === entry), `Missing packed UI entry: ${entry}`);
+    }
     artifact = path.join(temporary, pack.filename);
     process.stdout.write(`Packed ${pack.filename}: ${pack.integrity}\n`);
   }
@@ -75,6 +79,25 @@ try {
   for (const entry of [manifest.main, manifest.types, "README.md", "MIGRATION.md", "CHANGELOG.md", "RELEASING.md", ".env.example"]) {
     assert((await fs.stat(path.join(installed, entry))).isFile(), `Missing package entry: ${entry}`);
   }
+  const uiRoot = path.join(installed, "dist/owner-ui");
+  const uiHtml = await fs.readFile(path.join(uiRoot, "index.html"), "utf8");
+  assert(uiHtml.includes("Crystal preview"));
+  assert(!uiHtml.includes("/src/main.tsx"), "Package must contain built UI, not a Vite source entry");
+  const assets = [...uiHtml.matchAll(/(?:src|href)="(\.\/assets\/[^"]+\.(?:js|css))"/gu)].map((match) => match[1]!);
+  assert(assets.some((asset) => asset.endsWith(".js")), "Missing bundled UI script");
+  assert(assets.some((asset) => asset.endsWith(".css")), "Missing bundled UI CSS");
+  for (const asset of assets) {
+    assert((await fs.stat(path.join(uiRoot, asset))).isFile(), `Missing built asset: ${asset}`);
+    if (asset.endsWith(".css")) {
+      const css = await fs.readFile(path.join(uiRoot, asset), "utf8");
+      assert(css.includes("obsidian-crystal-login-bg.png"), "CSS must reference the packaged artwork");
+    }
+  }
+  const artwork = await fs.readFile(path.join(uiRoot, "assets/obsidian-crystal-login-bg.png"));
+  assert.equal(createHash("sha256").update(artwork).digest("hex"), "09b3439af1755af8dc41a3c795d23368f5dc85af18343bc2b6e3fb5cf50615d4", "Original artwork must survive packaging byte-for-byte");
+  const mark = await fs.readFile(path.join(uiRoot, "assets/vaultbridge-crystal-mark.png"));
+  assert.equal(createHash("sha256").update(mark).digest("hex"), "a2efdebc474b82c64bae07920f7f4f79933486fe4bf94fdeda0bc055e2f161e2", "User-provided brand mark must survive packaging byte-for-byte");
+  assert(!await fs.stat(path.join(consumer, "node_modules/vite")).catch(() => undefined), "Consumer must run without Vite");
   const readme = await fs.readFile(path.join(installed, "README.md"), "utf8");
   assert(readme.includes(`npx ${canonical}@${isAlpha ? "alpha" : manifest.version}`));
   assert(readme.includes(isAlpha ? "Early preview" : `v${manifest.version}`));

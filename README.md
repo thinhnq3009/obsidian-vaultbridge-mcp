@@ -532,3 +532,37 @@ rollback](docs/AUTH-003-runtime.md). Existing STDIO/static-token/legacy loopback
 modes remain available. No automatic OAuth migration is performed.
 See [AUTH-004 Phase B](docs/AUTH-004-phase-b.md) for owner-only consent/grants,
 request-scoped enforcement and live OAuth-to-MCP test boundaries.
+
+## Crystal owner UI foundation (FE-001, preview only)
+
+The React/Vite/TypeScript + Tailwind/shadcn UI reference lives in `web/`.
+It is **not connected to authentication**. Existing `/login`, `/consent`, `/admin`
+and `/owner.js` continue to use the legacy owner UI; no listener, API, CSP, CSRF,
+cookie or OAuth behavior is changed. Do not enter real credentials into the preview.
+
+```bash
+# Use a supported Node version from package.json; install once from the root.
+npm ci
+npm run dev:web       # UI-only development, 127.0.0.1:5173; no owner API proxy
+npm run build         # clean dist once, compile backend, then dist/owner-ui
+npm run preview:web   # built reference at 127.0.0.1:4173
+
+# Optional browser evidence (separate loopback preview; no vault required):
+npx playwright install chromium
+npm run verify:web    # starts/stops its own built preview; requires port 4173 free
+```
+
+Frontend dependencies are root **devDependencies**, bundled at build time rather
+than installed as CLI runtime dependencies. The npm tarball includes
+`dist/owner-ui/index.html`, local JS/CSS, the unchanged original background PNG
+and the user-supplied transparent crystal logo. The latest approved mockup
+drives the left introduction / central artwork / right glass-panel composition.
+`npm start` still runs only the Node CLI; it does not start Vite or serve the new UI.
+The shared Crystal tokens are in `web/src/styles/tokens.css`; local shadcn-style
+primitives and VaultBridge wrappers are under `web/src/components/`. Form states
+are selectable in the preview or with `?state=error` (also `rate-limited`,
+`loading`, `disabled`, `expired`). No simulated success, owner session or grant
+is created.
+
+See [FE-001 implementation and screenshot evidence](docs/FE-001-frontend-foundation.md)
+in the source repository for scope, validation, asset provenance and rollback.

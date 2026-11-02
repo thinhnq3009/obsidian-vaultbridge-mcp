@@ -1,0 +1,46 @@
+/* FE-UI-001 canonical Crystal contract. Keep palette decisions out of components. */
+:root {
+  color-scheme: dark;
+  --vb-bg: #060A13;
+  --vb-bg-raised: #0C1527;
+  --vb-surface: #111D31;
+  --vb-surface-high: #17253B;
+  --vb-glass: rgba(10,18,33,.82);
+  --vb-border: #2A3D56;
+  --vb-border-glow: rgba(70,209,237,.38);
+  --vb-primary: #36D9EA;
+  --vb-primary-hover: #72ECF7;
+  --vb-accent: #A078F5;
+  --vb-blue: #427CCB;
+  --vb-text: #EEF6FF;
+  --vb-muted: #ACBED4;
+  --vb-on-primary: #06141E;
+  --vb-success: #50D4AD;
+  --vb-warning: #FFD28D;
+  --vb-danger: #FF839B;
+  --vb-radius-field: 12px;
+  --vb-radius-card: 20px;
+  --vb-control-height: 46px;
+  --vb-shadow-card: 0 26px 70px rgba(0,0,0,.5);
+
+  /* shadcn semantic aliases, not a second palette. */
+  --background: var(--vb-bg);
+  --foreground: var(--vb-text);
+  --card: var(--vb-surface);
+  --card-foreground: var(--vb-text);
+  --popover: var(--vb-surface-high);
+  --popover-foreground: var(--vb-text);
+  --primary: var(--vb-primary);
+  --primary-foreground: var(--vb-on-primary);
+  --secondary: var(--vb-surface-high);
+  --secondary-foreground: var(--vb-text);
+  --muted: var(--vb-surface);
+  --muted-foreground: var(--vb-muted);
+  --accent: var(--vb-accent);
+  --accent-foreground: var(--vb-bg);
+  --destructive: var(--vb-danger);
+  --border: var(--vb-border);
+  --input: var(--vb-border);
+  --ring: var(--vb-primary);
+  --radius: var(--vb-radius-field);
+}
