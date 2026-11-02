@@ -5,6 +5,13 @@ Prerequisite to AUTH-004 Phase B. PR #59 supplied diagnostics only.
 
 ## Operator contract
 
+For source checkouts on `develop`, `npm run dev` is a dev-only, loopback
+OAuth convenience launcher after an untracked `.env` is configured with
+`VAULT_PATH` and `MCP_OWNER_PASSWORD`. It supplies the HTTP transport, local
+issuer, and vault-specific ID derived from the canonical vault path, but normal CLI OAuth stays default-off.
+Run `npm run dev:stdio` for the previous STDIO development workflow.
+
+
 OAuth is **default-off** while #60 remains unresolved. Existing STDIO, static
 token and loopback unauthenticated installations retain their global policy.
 Unconfigured HTTP resolves to legacy `token` when `MCP_AUTH_TOKEN` exists (with
@@ -92,7 +99,7 @@ route limits still apply; all limiter state is released on shutdown.
   whole refresh-grant-family invalidation. Concurrent refresh/revoke can race
   and impact other grants upstream. Diagnostic scripts and known-fail workflow
   are unchanged. Public OAuth/release still requires explicit risk review.
-- Security/release issues #55–57 and draft #58 are not bypassed.
+- Security/release issues #55–57 remain open. PR #58 was integrated on 2026-11-02 under owner authorization; that merge did not resolve the findings or authorize an npm release.
 - Disable OAuth and restart in explicit token mode (or STDIO) to roll back.
   Provider migrations are additive. Do not drop owner/provider tables or
   restore mismatched SQLite/session.key backups. Stop the process before
