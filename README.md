@@ -36,6 +36,54 @@ Release availability and provenance are recorded on [npm](https://www.npmjs.com/
 
 The default transport is STDIO. Obsidian, API keys, certificates, and REST endpoints are not required.
 
+## OAuth development (source checkout)
+
+The published `0.1.0` CLI still defaults to STDIO. On the source `develop`
+branch, `npm run dev` starts **experimental OAuth** on loopback (not
+production mode). `npm run dev:stdio` preserves the previous dev command.
+
+```bash
+git checkout develop
+npm ci
+cp .env.example .env
+# Edit .env: set VAULT_PATH to your vault and MCP_OWNER_PASSWORD to a NEW
+# strong password (12–128 characters with >=3 character classes).
+npm run dev
+```
+
+This dev launcher configures HTTP `127.0.0.1:39145/mcp`, issuer
+`http://127.0.0.1:39145/api/auth`, OAuth authorization, and a separate
+**local-only** owner UI at `http://127.0.0.1:39146/login`. It chooses a
+stable development vault ID, derives the Host allowlist from the issuer,
+and refuses missing owner credentials or non-loopback MCP bind addresses.
+First-time owner bootstrap uses the password in `.env`; it does **not**
+reset an existing owner. If your local owner was bootstrapped using the
+public fallback password, change it through the local UI before consenting
+to OAuth.
+
+To connect ChatGPT through **one** HTTPS tunnel, forward only
+`http://127.0.0.1:39145` and add the following to your untracked `.env`:
+
+```dotenv
+MCP_OAUTH_ISSUER=https://your-stable-tunnel-host/api/auth
+MCP_HTTP_TLS_PROXY=true
+MCP_ALLOWED_HOSTS=your-stable-tunnel-host
+MCP_VAULT_ID=my-local-vault
+```
+
+Use the ChatGPT MCP endpoint `https://your-stable-tunnel-host/mcp`.
+Never tunnel port `39146`; browser login and consent must take place
+on the machine running the server. A remote browser on another machine
+cannot use this loopback redirect. `MCP_HTTP_TLS_PROXY=true` is an
+operator assertion that trusted HTTPS termination is configured; it
+does not provide TLS itself.
+
+OAuth remains **experimental**. The upstream grant-family revocation
+limitation [#60](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/60)
+is unresolved. See [runtime operator contract](docs/AUTH-003-runtime.md)
+and [single-tunnel E2E documentation](docs/AUTH-005A-single-tunnel.md).
+The npm release is not changed by this development command.
+
 ## Filesystem safety model
 
 Filesystem mode provides canonical path checks and revision preconditions. The deprecated Local REST adapter now enforces read-only and lexical path scopes, and fails closed for unsupported search, active-file reads and atomic/revision guarantees; see [migration notes](./MIGRATION.md).
