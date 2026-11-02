@@ -173,6 +173,7 @@ export class FilesystemVaultBackend implements VaultBackend {
     if (Buffer.byteLength(content, "utf8") > this.config.maxFileSizeBytes) throw new VaultError("Content exceeds configured file size limit.", { code: "FILE_TOO_LARGE" });
     const resolved = await this.accessPolicy.resolve(input, "write", false);
     return this.withPathLock(resolved.relative, async () => {
+      await this.accessPolicy.resolve(input, "write", false);
       const existing = await readExisting(resolved.absolute, this.config.maxFileSizeBytes);
       const mode = options.mode ?? "create";
       if (mode === "create" && existing) throw new VaultError(`Path already exists: ${resolved.relative}`, { code: "ALREADY_EXISTS" });
@@ -185,7 +186,7 @@ export class FilesystemVaultBackend implements VaultBackend {
         await atomicWrite(resolved.absolute, next, existing?.mode, () => this.revalidateAuthorization());
         await this.synchronizeCommitted([resolved.absolute]);
       }
-      return { path: resolved.relative, message: existing ? "File replaced successfully." : "File created successfully.", revision: revisionForContent(next) };
+      return { path: resolved.relative, message: existing ? "File replaced successfully." : "File created successfully.", revision: existing && next === existing.content ? existing.revision : revisionForContent(next) };
     });
   }
 
@@ -196,6 +197,7 @@ export class FilesystemVaultBackend implements VaultBackend {
   public async createFolder(input: string): Promise<{ path: string; created: boolean }> {
     const resolved = await this.accessPolicy.resolve(input, "write", false);
     return this.withPathLock(resolved.relative, async () => {
+      await this.accessPolicy.resolve(input, "write", false);
       try {
         await this.revalidateAuthorization();
         const created = await fs.mkdir(resolved.absolute, { recursive: true });
@@ -210,6 +212,7 @@ export class FilesystemVaultBackend implements VaultBackend {
   public async deletePath(input: string, options: { recursive?: boolean; expectedRevision?: string } = {}): Promise<void> {
     const resolved = await this.accessPolicy.resolve(input, "write", true, true);
     await this.withPathLock(resolved.relative, async () => {
+      await this.accessPolicy.resolve(input, "write", true, true);
       const stat = await fs.stat(resolved.absolute);
       const canonical = await fs.realpath(resolved.absolute);
       if (stat.isFile()) {
@@ -231,6 +234,8 @@ export class FilesystemVaultBackend implements VaultBackend {
     const source = await this.accessPolicy.resolve(sourceInput, "write", true, true);
     const destination = await this.accessPolicy.resolve(destinationInput, "write", false, true);
     return this.withPathLock(`${source.relative}->${destination.relative}`, async () => {
+      await this.accessPolicy.resolve(sourceInput, "write", true, true);
+      await this.accessPolicy.resolve(destinationInput, "write", false, true);
       const sourceStat = await fs.stat(source.absolute);
       if (sourceStat.isFile()) requireRevision(options.expectedRevision, await revisionForFile(source.absolute, this.config.maxFileSizeBytes));
       const destinationExists = await exists(destination.absolute);
@@ -334,6 +339,7 @@ export class FilesystemVaultBackend implements VaultBackend {
   private async updateTextFile(input: string, expectedRevision: string | undefined, transform: (content: string) => string, message: string) {
     const resolved = await this.accessPolicy.resolve(input, "write", true);
     return this.withPathLock(resolved.relative, async () => {
+      await this.accessPolicy.resolve(input, "write", true);
       const existing = await readExisting(resolved.absolute, this.config.maxFileSizeBytes);
       if (!existing) throw new VaultError(`Path does not exist: ${resolved.relative}`, { code: "NOT_FOUND" });
       requireRevision(expectedRevision, existing.revision);
@@ -342,7 +348,7 @@ export class FilesystemVaultBackend implements VaultBackend {
         await atomicWrite(resolved.absolute, next, existing.mode, () => this.revalidateAuthorization());
         await this.synchronizeCommitted([resolved.absolute]);
       }
-      return { path: resolved.relative, message, revision: revisionForContent(next) };
+      return { path: resolved.relative, message, revision: next === existing.content ? existing.revision : revisionForContent(next) };
     });
   }
 
@@ -370,15 +376,27 @@ export class FilesystemVaultBackend implements VaultBackend {
     await ensurePrivateDirectory(this.config.cacheDir);
     const lockDir = path.join(await fs.realpath(this.config.cacheDir), "locks");
     await ensurePrivateDirectory(lockDir);
-    const target = path.join(lockDir, createHash("sha256").update(`${this.vaultRealPath}:${relative}`).digest("hex"));
-    // proper-lockfile atomically creates `${target}.lock`; the target itself
-    // need not exist. Avoid creating or following a predictable sentinel file.
-    const release = await lockfile.lock(target, { retries: { retries: 20, minTimeout: 25, maxTimeout: 250 }, stale: 15_000, update: 5_000, realpath: false });
+    // All mutations share this cross-instance lock, including scoped backends,
+    // aliases and directory/descendant operations. Acquire it before the legacy
+    // path lock so every current operation uses the same ordering. This favors
+    // integrity over parallel writes; reads remain concurrent. Writers using a
+    // different cache directory or external editors do not share these locks.
+    const mutationTarget = path.join(lockDir, `${createHash("sha256").update(this.vaultRealPath).digest("hex")}.mutations`);
+    const lockOptions = { retries: { retries: 20, minTimeout: 25, maxTimeout: 250 }, stale: 15_000, update: 5_000, realpath: false };
+    const releaseMutation = await lockfile.lock(mutationTarget, lockOptions);
     try {
-      await this.revalidateAuthorization();
-      return await callback();
+      const target = path.join(lockDir, createHash("sha256").update(`${this.vaultRealPath}:${relative}`).digest("hex"));
+      // proper-lockfile atomically creates `${target}.lock`; the target itself
+      // need not exist. Avoid creating or following a predictable sentinel file.
+      const release = await lockfile.lock(target, lockOptions);
+      try {
+        await this.revalidateAuthorization();
+        return await callback();
+      } finally {
+        await release();
+      }
     } finally {
-      await release();
+      await releaseMutation();
     }
   }
 }
@@ -429,8 +447,8 @@ async function readExisting(absolute: string, maxFileSizeBytes: number): Promise
       const stat = await handle.stat();
       if (!stat.isFile()) throw new VaultError("Target is not a file.", { code: "INVALID_PATH" });
       if (stat.size > maxFileSizeBytes) throw new VaultError("File exceeds configured size limit.", { code: "FILE_TOO_LARGE" });
-      const content = await readBounded(handle, maxFileSizeBytes);
-      return { content, revision: revisionForContent(content), mode: stat.mode, stat };
+      const bytes = await readBounded(handle, maxFileSizeBytes);
+      return { content: bytes.toString("utf8"), revision: revisionForContent(bytes), mode: stat.mode, stat };
     } finally {
       await handle.close();
     }
@@ -441,14 +459,14 @@ async function readExisting(absolute: string, maxFileSizeBytes: number): Promise
   }
 }
 
-async function readBounded(handle: FileHandle, maxFileSizeBytes: number): Promise<string> {
+async function readBounded(handle: FileHandle, maxFileSizeBytes: number): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let total = 0;
   while (total <= maxFileSizeBytes) {
     // Read at most one byte beyond the limit, even if the file grows after stat.
     const buffer = Buffer.alloc(Math.min(64 * 1024, maxFileSizeBytes + 1 - total));
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
-    if (bytesRead === 0) return Buffer.concat(chunks, total).toString("utf8");
+    if (bytesRead === 0) return Buffer.concat(chunks, total);
     total += bytesRead;
     if (total > maxFileSizeBytes) throw new VaultError("File exceeds configured size limit.", { code: "FILE_TOO_LARGE" });
     chunks.push(buffer.subarray(0, bytesRead));
@@ -456,7 +474,7 @@ async function readBounded(handle: FileHandle, maxFileSizeBytes: number): Promis
   throw new VaultError("File exceeds configured size limit.", { code: "FILE_TOO_LARGE" });
 }
 
-function revisionForContent(content: string): string {
+function revisionForContent(content: string | Buffer): string {
   return `sha256:${createHash("sha256").update(content).digest("hex")}`;
 }
 

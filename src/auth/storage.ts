@@ -39,10 +39,76 @@ export function assertOutsideVault(directory: string, vaultPath: string): void {
 }
 
 export function assertPrivateFile(file: string): void {
-  const stat = fs.lstatSync(file);
+  assertPrivateStat(fs.lstatSync(file));
+}
+
+function assertPrivateStat(stat: fs.Stats): void {
   if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw new Error("Unsafe owner auth storage file");
   if (process.platform !== "win32" && ((stat.mode & 0o077) !== 0 || stat.uid !== process.getuid?.())) {
     throw new Error("Owner auth files must be owned by this user with mode 0600");
+  }
+}
+
+/** ENOENT alone means absent; dangling links and permission errors fail closed. */
+function privateEntry(file: string): fs.Stats | undefined {
+  try {
+    const stat = fs.lstatSync(file);
+    assertPrivateStat(stat);
+    return stat;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+function assertIdentity(file: string, expected: fs.Stats): void {
+  const actual = privateEntry(file);
+  if (!actual || actual.dev !== expected.dev || actual.ino !== expected.ino) {
+    throw new Error("Owner auth storage file changed during initialization");
+  }
+}
+
+function openPrivateFile(file: string): number {
+  const expected = privateEntry(file);
+  if (!expected) throw new Error("Owner auth storage file disappeared during initialization");
+  // O_NONBLOCK prevents a swapped FIFO from hanging before fstat can reject it.
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+  try {
+    const stat = fs.fstatSync(fd);
+    assertPrivateStat(stat);
+    if (stat.dev !== expected.dev || stat.ino !== expected.ino) {
+      throw new Error("Owner auth storage file changed during initialization");
+    }
+    assertIdentity(file, stat);
+    return fd;
+  } catch (error) {
+    fs.closeSync(fd);
+    throw error;
+  }
+}
+
+function readSessionKey(file: string): string {
+  const fd = openPrivateFile(file);
+  try {
+    const before = fs.fstatSync(fd);
+    const bytes = Buffer.alloc(65);
+    let length = 0;
+    while (length < bytes.length) {
+      const read = fs.readSync(fd, bytes, length, bytes.length - length, null);
+      if (read === 0) break;
+      length += read;
+    }
+    const after = fs.fstatSync(fd);
+    assertPrivateStat(after);
+    assertIdentity(file, after);
+    const secret = bytes.subarray(0, length).toString("utf8");
+    if (before.size !== 64 || after.size !== 64 || before.mtimeMs !== after.mtimeMs ||
+        before.ctimeMs !== after.ctimeMs || !/^[A-Za-z0-9_-]{64}$/u.test(secret)) {
+      throw new Error("Invalid owner session key; restore a matching database/key backup");
+    }
+    return secret;
+  } finally {
+    fs.closeSync(fd);
   }
 }
 
@@ -56,41 +122,61 @@ export async function openAuthStorage(directory: string, vaultPath: string) {
   }
   for (const name of ["session.key", "auth.sqlite", "auth.sqlite-wal", "auth.sqlite-shm", "setup-token"]) {
     const file = path.join(directory, name);
-    if (fs.existsSync(file)) assertPrivateFile(file);
+    privateEntry(file);
   }
   restrictWindowsAccess(directory, true);
   const release = await lockfile.lock(directory, { realpath: true, retries: 0 });
   let database: DatabaseSync | undefined;
+  let databaseFd: number | undefined;
   try {
     const secretPath = path.join(directory, "session.key");
-    if (!fs.existsSync(secretPath) && fs.existsSync(path.join(directory, "auth.sqlite"))) throw new Error("Missing owner session key; restore the matching key backup");
-    if (!fs.existsSync(secretPath)) fs.writeFileSync(secretPath, randomBytes(48).toString("base64url"), { flag: "wx", mode: 0o600 });
-    assertPrivateFile(secretPath);
-    const secret = fs.readFileSync(secretPath, "utf8");
-    if (!/^[A-Za-z0-9_-]{64}$/u.test(secret)) throw new Error("Invalid owner session key; restore a matching database/key backup");
     const databasePath = path.join(directory, "auth.sqlite");
-    if (!fs.existsSync(databasePath)) fs.closeSync(fs.openSync(databasePath, "wx", 0o600));
-    for (const file of [databasePath, `${databasePath}-wal`, `${databasePath}-shm`]) {
-      if (fs.existsSync(file)) assertPrivateFile(file);
+    if (!privateEntry(secretPath)) {
+      if (privateEntry(databasePath)) throw new Error("Missing owner session key; restore the matching key backup");
+      fs.writeFileSync(secretPath, randomBytes(48).toString("base64url"), { flag: "wx", mode: 0o600 });
     }
+    const secret = readSessionKey(secretPath);
+    if (!privateEntry(databasePath)) fs.closeSync(fs.openSync(databasePath, "wx", 0o600));
+    databaseFd = openPrivateFile(databasePath);
+    const databaseIdentity = fs.fstatSync(databaseFd);
+    for (const file of [databasePath, `${databasePath}-wal`, `${databasePath}-shm`]) {
+      privateEntry(file);
+    }
+    // node:sqlite opens by pathname, not by our descriptor. Verify identity
+    // before any PRAGMA, but retain the private-directory/ACL trust boundary.
     database = new DatabaseSync(databasePath);
+    assertIdentity(databasePath, databaseIdentity);
     database.exec("PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;");
     // SQLite derives sidecar permissions from the pre-created 0600 database.
     for (const suffix of ["", "-wal", "-shm"]) {
       const file = `${databasePath}${suffix}`;
-      if (fs.existsSync(file)) assertPrivateFile(file);
+      privateEntry(file);
     }
+    assertIdentity(databasePath, databaseIdentity);
+    fs.closeSync(databaseFd);
+    databaseFd = undefined;
     const db = database;
     return {
       database: db,
       secret,
       async close() {
-        try { db.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } finally { db.close(); await release(); }
+        try {
+          db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+        } finally {
+          try { db.close(); } finally { await release(); }
+        }
       },
     };
   } catch (error) {
-    database?.close();
-    await release();
+    try {
+      database?.close();
+    } finally {
+      try {
+        if (databaseFd !== undefined) fs.closeSync(databaseFd);
+      } finally {
+        await release();
+      }
+    }
     throw error;
   }
 }

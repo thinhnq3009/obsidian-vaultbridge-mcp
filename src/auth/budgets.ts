@@ -10,7 +10,7 @@ export class RequestBudgets {
       for (const [id, value] of this.entries) if (now > value.expires) this.entries.delete(id);
       if (this.entries.size >= 4096) return false;
     }
-    this.entries.set(key, { tokens: Math.max(0, tokens - 1), at: now, expires: now + Math.max(60000, burst * 60000 / rpm) });
+    this.entries.set(key, { tokens: tokens >= 1 ? tokens - 1 : tokens, at: now, expires: now + Math.max(60000, burst * 60000 / rpm) });
     return tokens >= 1;
   }
   public refund(key: string): void {
