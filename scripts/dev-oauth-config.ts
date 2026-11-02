@@ -5,9 +5,9 @@ import type { AppConfig } from "../src/types.js";
  * Dev-only convenience configuration. It never makes OAuth the production
  * default or exposes owner login on a public listener.
  */
-export function createDevOauthConfig(source: NodeJS.ProcessEnv, argv: string[] = []): AppConfig {
+export function createDevOauthConfig(source: NodeJS.ProcessEnv, argv: string[] = [], dotEnv: Record<string, string> = loadDotEnvFile()): AppConfig {
   const cli = parseCliArgs(argv);
-  const supplied = { ...loadDotEnvFile(), ...source, ...cli };
+  const supplied = { ...dotEnv, ...source, ...cli };
   if (cli.MCP_TRANSPORT && cli.MCP_TRANSPORT !== "http") {
     throw new Error("OAuth development requires HTTP transport; use npm run dev:stdio for STDIO.");
   }
