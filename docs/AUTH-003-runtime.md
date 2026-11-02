@@ -8,7 +8,7 @@ Prerequisite to AUTH-004 Phase B. PR #59 supplied diagnostics only.
 For source checkouts on `develop`, `npm run dev` is a dev-only, loopback
 OAuth convenience launcher after an untracked `.env` is configured with
 `VAULT_PATH` and `MCP_OWNER_PASSWORD`. It supplies the HTTP transport, local
-issuer, and stable local vault ID, but normal CLI OAuth stays default-off.
+issuer, and vault-specific ID derived from the canonical vault path, but normal CLI OAuth stays default-off.
 Run `npm run dev:stdio` for the previous STDIO development workflow.
 
 
