@@ -94,8 +94,8 @@ Filesystem mode provides canonical path checks and revision preconditions. The d
 - In filesystem mode, deleting, moving or renaming the vault root is denied, including `.` and symlink/junction aliases of the root.
 - Filesystem search applies the same `READ_PATHS` policy before reading notes, indexing, returning results and saving its cache. Search excludes symlinks and junctions, including aliases within the vault.
 - Writes use a same-directory temporary file, flush, and atomic rename.
-- Cross-process locks serialize mutations for the same path.
-- Reads return an opaque `sha256:...` revision. Updating an existing note or Canvas requires `expected_revision`; stale revisions return `CONFLICT` instead of overwriting newer data.
+- Cross-process locks serialize all mutations within a canonical vault when backend instances share the same cache directory. This also covers move source/destination conflicts, aliases, and directory/descendant operations. Reads remain concurrent; parallel writes trade throughput for integrity. Older server versions, writers using different cache directories, and external editors do not participate in the full vault-wide locking protocol.
+- Reads return an opaque `sha256:...` revision calculated from the raw file bytes before text decoding, including for binary attachments. Updating an existing note or Canvas requires `expected_revision`; stale revisions return `CONFLICT` instead of overwriting newer data. Previously cached revisions for files containing invalid UTF-8 must be refreshed.
 - Search indexes, locks, and temporary application state are stored outside the vault.
 
 ## Configuration
