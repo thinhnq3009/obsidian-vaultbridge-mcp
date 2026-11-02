@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { createDevOauthConfig } from "../scripts/dev-oauth-config.js";
 
@@ -16,7 +19,24 @@ describe("OAuth development launcher", () => {
     expect(dev.mcpOwnerPort).toBe(39146);
     expect(dev.mcpOauthIssuer).toBe("http://127.0.0.1:39145/api/auth");
     expect(dev.mcpAllowedHosts).toEqual(["127.0.0.1"]);
-    expect(dev.mcpVaultId).toBe("local-development-vault");
+    expect(dev.mcpVaultId).toMatch(/^dev-[a-f0-9]{32}$/u);
+  });
+
+  it("binds default OAuth grant identity to the canonical vault and never shares it across different vaults", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vaultbridge-dev-id-"));
+    try {
+      const a = path.join(root, "A");
+      const b = path.join(root, "B");
+      fs.mkdirSync(a);
+      fs.mkdirSync(b);
+      const first = config({ VAULT_PATH: a }).mcpVaultId;
+      const second = config({ VAULT_PATH: b }).mcpVaultId;
+      expect(first).not.toBe(second);
+      expect(config({ VAULT_PATH: a }).mcpVaultId).toBe(first);
+      expect(config({ VAULT_PATH: b, MCP_VAULT_ID: "explicit-reviewed-id" }).mcpVaultId).toBe("explicit-reviewed-id");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("overrides a copied .env STDIO setting without modifying the normal server", () => {
