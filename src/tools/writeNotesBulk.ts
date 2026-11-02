@@ -38,6 +38,7 @@ export const registerWriteNotesBulkTool: ToolRegistrar = (server, client) => {
     },
     async ({ files }) => {
       try {
+        await client.preflightWriteNotes?.(files.map((file) => file.path));
         const written = [];
         for (const file of files) {
           const mode = file.overwrite ? "replace" : file.mode;

@@ -6,7 +6,7 @@
 
 1. **Security:** CodeQL alerts #1, #2 and #4 were verified `fixed` on 2026-10-25 after PRs #42/#44. Candidate `b38cf918314bcd2016a135ded8ba6302ccd85c9c` passed [six-platform CI](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40208154561) and [security analysis](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/actions/runs/40208154569). Recheck open alerts and final main SHA before publication. Issue #23 acceptance is closed.
 2. **Release SHA:** Merge reviewed `develop` changes into `main` via release PR only after gates; confirm `package.json` and lockfile both say `0.1.0`, `publishConfig.tag=latest`, README client examples, changelog, supported Node (`^22.23.4 || ^24.22.1`) and no accidental OAuth claims.
-3. **CI:** on the final intended SHA, require Ubuntu/macOS/Windows × supported patched Node minimums green with `npm ci`, build, lint, coverage tests, full and production audit, package dry run and installed-tarball CLI smoke against disposable vaults. Verify no secrets, user vault content, caches, or unintended source files in package.
+3. **CI:** each PR and `develop`/`main` push uses fast Ubuntu/Node 24 checks, dependency audits and security analysis. At publication time, the manual `Publish npm` workflow first verifies the reviewed `main` SHA, then gates publishing on the full Ubuntu/macOS/Windows × supported Node 22/24 compatibility matrix. Release tests include `npm ci`, build, lint, coverage tests, package dry run and installed-tarball smoke checks. The verify job also performs full and production audits. Verify no secrets, vault content, caches or unintended files in the package.
 4. **Review:** confirm real note/Canvas read/write/search, scoped authorization, stale revision rejection, symlink/path/TOCTOU regression, and both CLI aliases from the packed tarball. Review source-to-artifact integrity and npm provenance/trusted publishing setup.
 5. **Owner-approved publication only:** from clean reviewed `main` checkout and trusted provenance environment, publish `npm publish --tag latest --provenance`; do not expose npm publish secrets to PR builds. Creating a GitHub release alone does **not** publish npm. If trusted publishing cannot be configured, stop rather than silently omitting provenance.
 6. **Verify live artifact:** `npm view obsidian-vaultbridge-mcp@0.1.0 gitHead dist --json`, `npm view obsidian-vaultbridge-mcp dist-tags --json`, registry tarball integrity/attestation, and on supported Node versions `npx -y obsidian-vaultbridge-mcp@0.1.0 --vault /path/to/disposable-vault`. Confirm downstream Codex/Claude/Cursor STDIO handshake and filesystem tool round trip.
@@ -34,8 +34,11 @@ manual workflow is discoverable on the default branch. Wait for CI and Security
 analysis on the exact main SHA, then dispatch `publish.yml` with ref `main` and
 input `sha` equal to that full SHA. The workflow rejects other refs/versions,
 requires green main CI/security and no open HIGH/CRITICAL alerts, reruns local
-checks, publishes with provenance, checks registry source/integrity/attestation,
-and installs the registry package on both supported Node versions. Create the
+checks, then gates publication on the full six-combination Ubuntu/macOS/Windows
+× Node 22/24 compatibility matrix. Only after it passes does the workflow
+publish with provenance, check registry source/integrity/attestation, and
+install the registry package on both supported Node versions. PRs do not
+trigger the cross-platform matrix. Create the
 GitHub tag/release only after these jobs succeed. A failed post-publication
 check requires investigation; a published version cannot be overwritten.
 

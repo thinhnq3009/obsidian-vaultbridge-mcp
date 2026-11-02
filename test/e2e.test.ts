@@ -31,7 +31,7 @@ describe("standalone STDIO server", () => {
     const tsxCli = path.resolve("node_modules/tsx/dist/cli.mjs");
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [tsxCli, "src/index.ts", "--vault", vault, "--watch-mode", "off", "--index-mode", "scan"],
+      args: [tsxCli, "src/index.ts", "--stdio", "--vault", vault, "--watch-mode", "off", "--index-mode", "scan"],
       env: { ...process.env, VAULT_PATH: vault },
       stderr: "pipe",
     });

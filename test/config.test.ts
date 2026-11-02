@@ -14,6 +14,14 @@ afterEach(async () => {
 });
 
 describe("loadConfig", () => {
+  it("validates the independent OAuth endpoint admission budget and CLI precedence", () => {
+    expect(loadConfig({ VAULT_PATH: "." }, []).mcpOauthEndpointRpm).toBe(60);
+    expect(loadConfig({ VAULT_PATH: ".", MCP_OAUTH_ENDPOINT_RPM: "12" }, []).mcpOauthEndpointRpm).toBe(12);
+    expect(loadConfig({ VAULT_PATH: ".", MCP_OAUTH_ENDPOINT_RPM: "12" }, ["--oauth-endpoint-rpm=7"]).mcpOauthEndpointRpm).toBe(7);
+    for (const value of ["0", "-1", "1001", "Infinity", "invalid"]) {
+      expect(() => loadConfig({ VAULT_PATH: ".", MCP_OAUTH_ENDPOINT_RPM: value }, [])).toThrow(/Invalid configuration/);
+    }
+  });
   it("defaults automatic agent timestamps on and accepts environment/CLI rollback", () => {
     expect(loadConfig({ VAULT_PATH: "." }, []).autoAgentEditAt).toBe(true);
     expect(loadConfig({ VAULT_PATH: ".", AUTO_AGENT_EDIT_AT: "false" }, []).autoAgentEditAt).toBe(false);

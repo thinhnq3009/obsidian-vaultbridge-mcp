@@ -1,0 +1,37 @@
+name: AUTH-003 revocation gate
+
+# Known upstream Better Auth grant-family revocation blocker: issue #60.
+# Run this diagnostic manually while deferred; its six cases still fail for the
+# actual provider contract gap. Do not interpret routine CI green as a revocation pass.
+# Reintroduce required automated checks before declaring full OAuth lifecycle safe.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  opaque-family-revocation:
+    # Deliberately red while the provider cannot satisfy AUTH-003. Do not use
+    # continue-on-error or invert the probe's exit status to make this green.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: [22.23.4, 24.22.1]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: scripts/spikes/better-auth-sdk-v2/package-lock.json
+      - run: npm ci --prefix scripts/spikes/better-auth-sdk-v2
+      - run: node --check scripts/spikes/better-auth-sdk-v2/lifecycle-revocation.mjs
+      - run: npm --prefix scripts/spikes/better-auth-sdk-v2 run probe:opaque-local
+      # Collect concurrency evidence even while the lifecycle assertion is red.
+      # Both steps retain their real exit codes; neither failure is suppressed.
+      - if: ${{ !cancelled() }}
+        run: npm --prefix scripts/spikes/better-auth-sdk-v2 run probe:concurrency

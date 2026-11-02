@@ -1,0 +1,47 @@
+name: Verify published npm release
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Full source SHA recorded in the published v0.1.0 package
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  registry-smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22.23.4, 24.22.1]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+      - name: Verify public source, integrity, provenance and latest
+        env:
+          RELEASE_SHA: ${{ inputs.sha }}
+        run: |
+          npm view obsidian-vaultbridge-mcp@0.1.0 version gitHead dist --json > /tmp/registry.json
+          npm view obsidian-vaultbridge-mcp dist-tags --json > /tmp/tags.json
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          const pkg = JSON.parse(fs.readFileSync('/tmp/registry.json', 'utf8'));
+          const tags = JSON.parse(fs.readFileSync('/tmp/tags.json', 'utf8'));
+          assert.equal(pkg.version, '0.1.0');
+          assert.equal(pkg.gitHead, process.env.RELEASE_SHA);
+          assert(pkg.dist.integrity && pkg.dist.attestations?.url);
+          assert.equal(tags.latest, pkg.version);
+          console.log(JSON.stringify({ sha: pkg.gitHead, dist: pkg.dist, tags }, null, 2));
+          JS
+      - run: npm ci
+      - run: npm run smoke:package -- obsidian-vaultbridge-mcp@0.1.0

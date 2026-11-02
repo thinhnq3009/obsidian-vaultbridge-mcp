@@ -33,6 +33,21 @@ export type AppConfig = {
   mcpAllowedHosts?: string[];
   mcpAuthToken?: string;
   mcpHttpTlsProxy?: boolean;
+  mcpAuthMode?: "oauth" | "token" | "none";
+  mcpOauthEnabled?: boolean;
+  mcpOauthIssuer?: string;
+  mcpAuthDirectory?: string;
+  mcpOwnerPort?: number;
+  mcpOwnerUsername?: string;
+  mcpOwnerPassword?: string;
+  mcpVaultId?: string;
+  mcpAllowUnauthenticatedNetwork?: boolean;
+  mcpRateLimitRpm?: number;
+  mcpRateLimitBurst?: number;
+  mcpMaxConcurrent?: number;
+  mcpAuthenticatedClientRpm?: number;
+  mcpUnauthenticatedAttemptRpm?: number;
+  mcpOauthEndpointRpm?: number;
 };
 
 export type VaultErrorCode =
