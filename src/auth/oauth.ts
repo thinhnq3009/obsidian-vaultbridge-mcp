@@ -75,7 +75,9 @@ export function principalVerifier(
   options: { issuer: string; resource: string; ownerId: () => string | undefined },
 ) {
   return async (authorization: string | undefined): Promise<VerifiedPrincipal> => {
-    const match = /^Bearer ([A-Za-z0-9_-]{16,8192})$/u.exec(authorization ?? "");
+    // HTTP auth schemes are case-insensitive; RFC 6750 permits 1*SP.
+    // Keep the opaque token itself byte-for-byte, without case normalization.
+    const match = /^[Bb][Ee][Aa][Rr][Ee][Rr] +([A-Za-z0-9_-]{16,8192})$/u.exec(authorization ?? "");
     if (!match) throw new Error("Invalid bearer");
     const claims = claimsSchema.parse(await validate(match[1]!));
     const scopes = claims.scope.split(" ");

@@ -18,7 +18,8 @@ export class LoginBudget {
       if (row && Number(row.next_allowed) > now) return Math.ceil((Number(row.next_allowed) - now) / 1000);
     }
     // The listener only accepts loopback peers; cap attacker-controlled account cardinality.
-    if (Number(this.db.prepare("SELECT count(*) AS count FROM vaultbridge_login_budget").get()?.count) >= 1024) return this.windowSeconds;
+    const newKeys = keys.filter((key) => !this.db.prepare("SELECT 1 FROM vaultbridge_login_budget WHERE key=?").get(key)).length;
+    if (Number(this.db.prepare("SELECT count(*) AS count FROM vaultbridge_login_budget").get()?.count) + newKeys > 1024) return this.windowSeconds;
     for (const key of keys) this.db.prepare(`INSERT INTO vaultbridge_login_budget VALUES (?, 1, ?, 0)
       ON CONFLICT(key) DO UPDATE SET failures=failures+1`).run(key, now + this.windowSeconds * 1000);
     return 0;
