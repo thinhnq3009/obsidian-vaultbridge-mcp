@@ -49,7 +49,13 @@ async function start(extra: { recover?: boolean; maxFailures?: number; windowSec
   return service;
 }
 async function post(route: string, body: unknown, headers: Record<string, string> = {}) {
-  return fetch(`${service!.origin}${route}`, {
+  const target = new URL(route, service!.origin);
+  if (target.protocol !== "http:" || target.hostname !== "127.0.0.1" ||
+      target.origin !== service!.origin || target.username || target.password) {
+    throw new Error("Owner test requests must stay on their disposable loopback listener");
+  }
+  return fetch(target, {
+    redirect: "error",
     method: "POST", headers: { "Content-Type": "application/json", Origin: service!.origin, "X-VaultBridge-CSRF": "1", ...headers }, body: JSON.stringify(body),
   });
 }
@@ -62,6 +68,17 @@ async function login() {
 }
 
 describe("local owner HTTP lifecycle", () => {
+  it("rejects external or alternate-listener test targets before sending fixture credentials", async () => {
+    await start();
+    const outbound = vi.spyOn(globalThis, "fetch");
+    try {
+      for (const route of ["https://example.invalid/setup", "//example.invalid/setup", "http://127.0.0.1:1/setup"]) {
+        await expect(post(route, { token: "disposable-fixture" })).rejects.toThrow("disposable loopback");
+      }
+      expect(outbound).not.toHaveBeenCalled();
+    } finally { outbound.mockRestore(); }
+  });
+
   it("automatically bootstraps the public default once, blocks OAuth and rotates through loopback only", async () => {
     service = await startOwnerServer({
       directory, vaultPath, port: 0,

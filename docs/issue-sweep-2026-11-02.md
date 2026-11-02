@@ -26,9 +26,9 @@ to every external filesystem race.
 
 | Issue | Required follow-up |
 | --- | --- |
-| #55 | Remediate/review owner-storage pathname check/use races and verify final-SHA CodeQL evidence. |
-| #56 | Remediate/review session-key and SQLite initialization races, including missing-key fail-closed behavior and supported OS permissions. |
-| #57 | Review the exact file-to-HTTP flow and final-SHA scan evidence; any false-positive disposition requires reviewer approval. |
+| #55 | Descriptor validation, no-follow/non-blocking opens and dangling-link rejection implemented; SQLite/ACL pathname boundary, exact traces and final-SHA CodeQL review remain. |
+| #56 | Key reads bounded to one validated descriptor, exclusive creation retained, database identity checks and failure cleanup added; malicious external pathname races and OS review remain. |
+| #57 | Historical fixture flow inspected; test POSTs now enforce the exact numeric loopback origin and refuse redirects. Scanner disposition still requires final-SHA evidence and reviewer approval. |
 | #60 | Satisfy the maintained provider's grant-family revocation/concurrency contract. Preserve the explicit OAuth opt-in and truthful failing diagnostics; do not fork/patch the provider or relax the requirement without approval. |
 | #46 | Reconcile implemented owner persistence/UI with the complete acceptance list and unresolved storage security follow-ups. |
 | #47 | Reconcile implemented experimental OAuth with lifecycle acceptance; #60 is not solved by local vault-grant denial. |
@@ -41,6 +41,11 @@ GitHub alert API reads on November 2 showed alerts **7, 8 and 9 dismissed** on
 October 27 with reason `used in tests` and comment
 `Created issue. Will be fix later`. These historical dispositions are **not**
 evidence of remediation; production storage findings #55/#56 still need work.
+
+Continuation: PR #80 already existed at `82845e3`; it is reused rather than
+duplicated. See `docs/auth-storage-hardening.md` for the additional storage
+changes and precise remaining limits. New alert API reads for 7 and 8 returned
+HTTP 404; the earlier historical snapshot above was not reverified.
 
 ## Execution limitations
 
@@ -69,3 +74,24 @@ On both Node 22.23.4 and Node 24.22.1,
 `npx vitest run test/requestBudgets.test.ts test/binaryRevisions.test.ts test/mutationConcurrency.test.ts test/lockSecurity.test.ts --maxWorkers=2`
 passed all 25 tests. Windows/macOS CI, final-SHA CodeQL and independent review
 have not been run for these changes.
+
+### Continuation validation (storage and test-flow hardening)
+
+- Linux / Node 24.22.1: build, lint, full coverage suite and packed-package
+  smoke passed. Full suite: **43 files, 777 tests passed, one skipped**.
+- Linux / Node 22.23.4: the six storage/owner/budget/binary/mutation/lock
+  suites passed: **64 tests**.
+- `git diff --check` passed.
+- An extra root `tsc --noEmit` diagnostic failed with nine test-type errors.
+  The same command against a disposable archive of baseline `82845e3`
+  produced identical diagnostics after checkout-path normalization. The
+  documented build gate passed; this is not a claim that full-root test
+  typechecking is clean.
+- An earlier full-suite attempt overlapped active edits and failed the new
+  shutdown-lock regression against an already-loaded prior storage module.
+  After stabilizing the source, that regression and the full suite passed.
+- Subagent launch and GitNexus remained unavailable. Required ChatGPT review
+  remained unavailable (`c2c` was absent, including in the supported Node
+  runtime's PATH). No independent security-review approval is implied.
+- Final pushed-SHA CI/CodeQL, macOS/Windows checks and provider/release
+  acceptance remain separate gates. #55–57 and #60 are not closed.
