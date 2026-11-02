@@ -6,8 +6,9 @@ import type { AppConfig } from "../src/types.js";
  * default or exposes owner login on a public listener.
  */
 export function createDevOauthConfig(source: NodeJS.ProcessEnv, argv: string[] = []): AppConfig {
-  const supplied = { ...loadDotEnvFile(), ...source, ...parseCliArgs(argv) };
-  if (supplied.MCP_TRANSPORT && supplied.MCP_TRANSPORT !== "http") {
+  const cli = parseCliArgs(argv);
+  const supplied = { ...loadDotEnvFile(), ...source, ...cli };
+  if (cli.MCP_TRANSPORT && cli.MCP_TRANSPORT !== "http") {
     throw new Error("OAuth development requires HTTP transport; use npm run dev:stdio for STDIO.");
   }
   if (supplied.MCP_AUTH_MODE && supplied.MCP_AUTH_MODE !== "oauth") {
