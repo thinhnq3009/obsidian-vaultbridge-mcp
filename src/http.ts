@@ -7,6 +7,7 @@ import { hostHeaderValidation } from "@modelcontextprotocol/sdk/server/middlewar
 import { timingSafeEqual } from "node:crypto";
 import { assertSupportedNode } from "./runtime.js";
 import { httpAuthMode, validateHttpDeployment } from "./config.js";
+import { createHttpDiagnostics } from "./httpDiagnostics.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 import { createApplication, createMcpServer, type ApplicationContext } from "./server.js";
@@ -44,16 +45,21 @@ export async function startHttpServer(config: AppConfig, options: { createApplic
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", false);
+  const diagnostics = createHttpDiagnostics(config);
+  // Observe even requests rejected by the first Host/security middleware.
+  app.use(diagnostics.observe);
   app.use(hostHeaderValidation(config.mcpAllowedHosts ?? ["127.0.0.1", "localhost", "[::1]"]));
   let active = 0;
   const budgets = new RequestBudgets();
   const principals = new WeakMap<Request, VerifiedPrincipal>();
   app.use(async (request, response, next) => {
     response.set("Cache-Control", "no-store");
+    diagnostics.stage(response, "issuer_host");
     if (mode === "oauth" && request.headers.host !== new URL(config.mcpOauthIssuer!).host) {
       response.status(403).json({ error: "Forbidden host" }); return;
     }
     const origin = request.headers.origin;
+    diagnostics.stage(response, "origin_validation");
     if (origin !== undefined) {
       try {
         const parsed = new URL(origin);
@@ -71,25 +77,32 @@ export async function startHttpServer(config: AppConfig, options: { createApplic
       response.status(429).json({ error: "Request budget exceeded" });
     };
     // Reserve capacity before any asynchronous provider/database/network work.
+    diagnostics.stage(response, "request_budget");
     if (active >= (config.mcpMaxConcurrent ?? 32)) { throttle(); return; }
     active++;
     response.once("close", () => { active--; });
     const peer = request.socket.remoteAddress ?? "unknown";
     if (!oauthRoute && mode !== "none" && !budgets.take(`attempt:${peer}`, config.mcpUnauthenticatedAttemptRpm ?? 60)) { throttle(); return; }
+    diagnostics.stage(response, "authentication");
     if (!oauthRoute && mode === "token" && !validToken(request.headers.authorization, config.mcpAuthToken!)) { fail(); return; }
     if (!oauthRoute && mode === "oauth") {
       try {
         const principal = await ownerService!.owner.verifyPrincipal!(request.headers.authorization);
         principals.set(request, principal);
         budgets.refund(`attempt:${peer}`);
-        if (!budgets.take(`client:${JSON.stringify([principal.principalId, principal.clientId])}`, config.mcpAuthenticatedClientRpm ?? 600)) { throttle(); return; }
+        if (!budgets.take(`client:${JSON.stringify([principal.principalId, principal.clientId])}`, config.mcpAuthenticatedClientRpm ?? 600)) {
+          diagnostics.stage(response, "request_budget"); throttle(); return;
+        }
       } catch { fail(); return; }
     }
     if (!oauthRoute && mode === "token") budgets.refund(`attempt:${peer}`);
+    diagnostics.stage(response, "content_encoding");
     if (request.headers["content-encoding"] && request.headers["content-encoding"].trim().toLowerCase() !== "identity") {
       response.status(415).json({ error: "Compressed request bodies are disabled" }); return;
     }
+    diagnostics.stage(response, "request_budget");
     if (!budgets.take(oauthRoute ? `oauth:${peer}` : "global", config.mcpRateLimitRpm ?? 1200, config.mcpRateLimitBurst ?? 120)) { throttle(); return; }
+    diagnostics.stage(response, oauthRoute ? "oauth_budget" : "mcp_body");
     next();
   });
   const oauthLimitStore = ownerService ? new MemoryStore() : undefined;
@@ -100,9 +113,11 @@ export async function startHttpServer(config: AppConfig, options: { createApplic
     keyGenerator: () => "oauth-provider", store: oauthLimitStore!,
     standardHeaders: "draft-8", legacyHeaders: false,
     handler: (_request, response) => { response.status(429).json({ error: "OAuth endpoint budget exceeded" }); },
-  }), express.json({ limit: "16kb", inflate: false }),
+  }), (_request, response, next) => { diagnostics.stage(response, "oauth_body"); next(); },
+  express.json({ limit: "16kb", inflate: false }),
   express.urlencoded({ limit: "16kb", extended: false, inflate: false }),
   async (request: Request<Record<string, string>, unknown, unknown>, response) => {
+    diagnostics.stage(response, "oauth_provider");
     const headers = new Headers();
     for (const name of ["content-type", "origin", "accept"]) {
       const value = request.headers[name];
@@ -126,12 +141,14 @@ export async function startHttpServer(config: AppConfig, options: { createApplic
   app.all(config.mcpHttpPath, async (request: Request<Record<string, string>, unknown, unknown>, response: Response) => {
     let backend = application.backend;
     if (mode === "oauth") {
+      diagnostics.stage(response, "grant_authorization");
       const principal = principals.get(request);
       try {
         if (!principal || !ownerService || !request.headers.authorization) throw new Error("No principal");
         backend = ownerService.owner.backendForPrincipal(backend, principal, request.headers.authorization);
       } catch { response.status(403).json({ error: "No authorized vault grant" }); return; }
     }
+    diagnostics.stage(response, "mcp_transport");
     const server = createMcpServer(backend, { colorfulLogs: config.colorfulLogs });
     const transport = new StreamableHTTPServerTransport();
     response.on("close", () => { void transport.close(); void server.close(); });
@@ -144,6 +161,7 @@ export async function startHttpServer(config: AppConfig, options: { createApplic
     }
   });
 
+  app.use((_request, response, next) => { diagnostics.stage(response, "unmatched_route"); next(); });
   app.use((error: unknown, _request: Request, response: Response, _next: express.NextFunction) => {
     void _next;
     const status = typeof error === "object" && error !== null && "status" in error && typeof error.status === "number" ? error.status : 500;
