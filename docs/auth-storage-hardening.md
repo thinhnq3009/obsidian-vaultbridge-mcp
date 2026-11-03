@@ -69,3 +69,14 @@ disposition. Alert 7 and alert 8 API reads returned HTTP 404 on November 2,
 2026 with the current CLI credentials; the exact traces and live dispositions
 could not be verified. No alert was dismissed and no review thread resolved.
 Final-SHA CodeQL and reviewer approval remain required for #57.
+
+## #55 — directory change across lock acquisition
+
+Initialization now compares the directory device/inode, type, ownership and
+permissions after the asynchronous lock acquisition and rechecks vault
+separation before creating credentials or opening SQLite. Disposable regressions
+replace the directory or loosen its permissions at that exact boundary; both
+failed before this correction and pass after it. Failure releases the lock.
+This detects persistent changes across the await; the pathname-based SQLite
+trust boundary described above remains. Final CodeQL and security review are
+still required; this change alone does not close #55.
