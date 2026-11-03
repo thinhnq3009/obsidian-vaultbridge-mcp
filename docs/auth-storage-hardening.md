@@ -69,3 +69,15 @@ disposition. Alert 7 and alert 8 API reads returned HTTP 404 on November 2,
 2026 with the current CLI credentials; the exact traces and live dispositions
 could not be verified. No alert was dismissed and no review thread resolved.
 Final-SHA CodeQL and reviewer approval remain required for #57.
+
+## #56 — reserve the database before generating its key
+
+When the key is missing, initialization now exclusively creates the empty
+database first. Any existing or concurrently created database rejects startup
+without generating a new key. If exclusive key creation then loses a race, only
+the same still-empty database reservation is removed; the competing key remains.
+A crash between reservation and key creation leaves an empty database and no key
+and intentionally fails closed on restart. Restore a matching backup or, for a
+verified unused initialization only, remove the empty reservation while stopped.
+This is not atomic SQLite pathname opening or a same-user sandbox; those
+previously documented limits and final scanning/review requirements remain.

@@ -132,8 +132,26 @@ export async function openAuthStorage(directory: string, vaultPath: string) {
     const secretPath = path.join(directory, "session.key");
     const databasePath = path.join(directory, "auth.sqlite");
     if (!privateEntry(secretPath)) {
-      if (privateEntry(databasePath)) throw new Error("Missing owner session key; restore the matching key backup");
-      fs.writeFileSync(secretPath, randomBytes(48).toString("base64url"), { flag: "wx", mode: 0o600 });
+      // Reserve a NEW database atomically before generating a key. An existing
+      // database (even one that appeared after inspection) must never gain a
+      // freshly generated, unrelated session key.
+      let reserved: number;
+      try { reserved = fs.openSync(databasePath, "wx", 0o600); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+          throw new Error("Missing owner session key; restore the matching key backup", { cause: error });
+        }
+        throw error;
+      }
+      try {
+        fs.writeFileSync(secretPath, randomBytes(48).toString("base64url"), { flag: "wx", mode: 0o600 });
+      } catch (error) {
+        // Roll back only our still-empty reservation, never a replacement DB.
+        const identity = fs.fstatSync(reserved);
+        assertIdentity(databasePath, identity);
+        if (identity.size === 0) fs.unlinkSync(databasePath);
+        throw error;
+      } finally { fs.closeSync(reserved); }
     }
     const secret = readSessionKey(secretPath);
     if (!privateEntry(databasePath)) fs.closeSync(fs.openSync(databasePath, "wx", 0o600));
