@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
-import { verifyReadonlyTools } from "./e2eToolChecks.js";
+import { verifyReadonlyTools, verifyWritableTools } from "./e2eToolChecks.js";
 
 import type { E2ELifecycle } from "./e2eLifecycle.js";
 
@@ -59,12 +59,12 @@ export async function verifyNativeFlow(options: NativeFlowOptions): Promise<void
     return await response.json() as { url: string; grantId: string };
   }
 
-  async function authorize() {
+  async function authorize(scope = "vault:read offline_access") {
     const verifier = randomBytes(32).toString("base64url");
     const state = randomBytes(24).toString("base64url");
     const params = new URLSearchParams({
       client_id: clientId, redirect_uri: redirectUri, response_type: "code",
-      scope: "vault:read offline_access", resource, state, prompt: "consent",
+      scope, resource, state, prompt: "consent",
       code_challenge: createHash("sha256").update(verifier).digest("base64url"),
       code_challenge_method: "S256",
     });
@@ -165,13 +165,41 @@ export async function verifyNativeFlow(options: NativeFlowOptions): Promise<void
   assert.ok(refreshed.refresh_token);
   assert.notEqual(refreshed.refresh_token, tokens.refresh_token);
   await checkTools(refreshed.access_token);
+
+  // Explicit fresh consent for write scope; old read-only tokens stay read-only.
+  const writePending = await authorize("vault:read vault:write offline_access");
+  const actions = ["readNote", "writeNote", "statPath", "deletePath", "listFiles"];
+  const writeGrant = await ownerPost("/oauth/grants", {
+    oauth_query: writePending.query,
+    principalPermissions: [{ path: "Notes", actions }],
+    clientPermissions: [{ path: "Notes", actions, tools: [
+      "obsidian_read_note", "obsidian_write_note", "obsidian_delete_path", "obsidian_list_files",
+    ] }],
+  });
+  assert.equal(writeGrant.grantId, grant.grantId, "Explicit consent updates the same local grant");
+  const writeExchange = await token({
+    grant_type: "authorization_code", code: await approve(writePending),
+    code_verifier: writePending.verifier, redirect_uri: redirectUri,
+  });
+  assert.equal(writeExchange.status, 200);
+  const writeTokens = await writeExchange.json() as TokenResponse;
+  const writer = new Client({ name: "disposable-native-write-e2e", version: "1.0.0" });
+  try {
+    await writer.connect(new StreamableHTTPClientTransport(new URL(resource), {
+      fetch, requestInit: { headers: { authorization: `Bearer ${writeTokens.access_token}` } },
+    }));
+    await verifyWritableTools(writer, {
+      notePath: `Notes/Native-Write-${randomUUID()}.md`, deniedPath: options.deniedPath,
+    });
+  } finally { await writer.close(); }
+  await checkTools(refreshed.access_token);
   await ownerPost("/oauth/grants/revoke", { grantId: grant.grantId });
-  for (const accessToken of [tokens.access_token, refreshed.access_token]) {
+  for (const accessToken of [tokens.access_token, refreshed.access_token, writeTokens.access_token]) {
     const revoked = await fetch(resource, {
       method: "POST", headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
     });
     assert.equal(revoked.status, 403, "Revoked grant must invalidate all access tokens");
   }
-  console.log("  ✓ Native client: PKCE → scoped MCP read/deny → refresh rotation → grant revocation");
+  console.log("  ✓ Native client: PKCE → scoped read/write/delete and denials → refresh → grant revocation");
 }

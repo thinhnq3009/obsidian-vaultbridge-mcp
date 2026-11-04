@@ -184,3 +184,26 @@ On Linux with Node 22.23.4:
 - Advisory `npx tsc --noEmit` (including all test files) still reports **9 pre-existing diagnostics**. Comparison against an isolated copy of original PR head `60756c5` produced identical normalized diagnostics. The production build is green; this is not a claim that whole-repository test typechecking is clean.
 
 The same 35 focused tests also passed on Linux with Node 24.22.1. This records CLI/fixture evidence, **not** a real ChatGPT browser E2E or a complete cross-platform release-matrix result.
+
+## #49 — positive writable native-client evidence
+
+The shared native probe used by local and tunnel CLI scripts now obtains a
+second explicit consent with `vault:write`, updates only its Notes grant,
+and uses the real MCP SDK client/HTTP/provider/backend to create, read,
+revision-safely replace and delete a unique disposable note. It requires a
+specific CONFLICT for a stale replacement, verifies unchanged bytes/revision,
+and requires ACCESS_DENIED for an out-of-scope write. The old read-only token
+still cannot write after the local grant gains write rights. Revoking the
+local grant denies original, refreshed and new write access tokens.
+
+The existing single-tunnel integration test runs the same production-provider
+probe with fixture CIMD network IO. Only that expanded two-consent integration
+test has a 15-second budget; assertions and all other timeout settings remain.
+This provides local generic-client mutation evidence, not real browser, remote
+HTTPS, DCR or ChatGPT interoperability certification. The client is explicitly
+pre-provisioned in a disposable database, not dynamically registered.
+
+#60 provider family/concurrency acceptance, reviewed #55–57 dispositions,
+real HTTPS/browser/eligible ChatGPT evidence, 1/2/3-agent benchmarks, full
+release OS/Node matrix and owner release approval still gate AUTH-005.
+No package version, publish action or public OAuth default changes.
