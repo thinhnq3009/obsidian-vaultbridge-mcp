@@ -82,7 +82,7 @@ OAuth remains **experimental**. The upstream grant-family revocation
 limitation [#60](https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues/60)
 is unresolved. See [runtime operator contract](docs/AUTH-003-runtime.md)
 and [single-tunnel E2E documentation](docs/AUTH-005A-single-tunnel.md).
-The npm release is not changed by this development command.
+The npm release is not changed by this development command. See the [OAuth delivery and acceptance status](docs/AUTH-000-delivery-status.md) for child PRs and outstanding release gates.
 
 ## Filesystem safety model
 
