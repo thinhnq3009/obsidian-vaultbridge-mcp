@@ -63,11 +63,11 @@
     "url": "https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/issues"
   },
   "dependencies": {
-    "@better-auth/cimd": "1.7.13",
-    "@better-auth/mcp": "1.7.14",
-    "@better-auth/oauth-provider": "1.7.14",
+    "@better-auth/cimd": "1.7.16",
+    "@better-auth/mcp": "1.7.16",
+    "@better-auth/oauth-provider": "1.7.16",
     "@modelcontextprotocol/sdk": "^1.32.2",
-    "better-auth": "1.7.14",
+    "better-auth": "1.7.16",
     "chokidar": "^6.0.0",
     "express": "^5.3.0",
     "express-rate-limit": "8.7.1",
