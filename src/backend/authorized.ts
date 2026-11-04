@@ -34,16 +34,25 @@ class AuthorizedVaultBackend implements VaultBackend {
   public readonly requestScoped = true;
   public readonly capabilities = Object.freeze({ activeFile: false, openFile: false, searchIndex: false, filesystem: true });
   // Tool identity is process-owned, established by registerTool, never tool input.
-  private readonly tool = new AsyncLocalStorage<string>();
+  private readonly tool = new AsyncLocalStorage<Readonly<{ name: string; grants: GrantReader }>>();
   public constructor(private readonly backend: FilesystemVaultBackend, private readonly context: OAuthContext, private readonly options: RequestBackendOptions) {}
 
   public async runWithTool<T>(name: string, callback: () => Promise<T>): Promise<T> {
     // Admission also covers tool-level no-ops (e.g. rename to the same name).
     // Actual backend calls still enforce their exact action and paths.
+    // A live grant may be revoked/replaced while this callback awaits IO.
+    // Keep one revision for the entire invocation, including all its operations.
+    const revision = this.options.grants.get(this.context.grantId)?.revision;
+    const grants: GrantReader = Object.freeze({
+      get: (id: string) => {
+        const current = this.options.grants.get(id);
+        return current?.revision === revision ? current : undefined;
+      },
+    });
     let admission: OperationAuthorization | undefined;
     for (const action of pathActions) {
       try {
-        admission = new OperationAuthorization(this.context, this.options.grants, this.options.vaultId, this.options.resource, name, action, this.options.verifyRequest);
+        admission = new OperationAuthorization(this.context, grants, this.options.vaultId, this.options.resource, name, action, this.options.verifyRequest);
         break;
       } catch { /* Try another explicitly granted action, never bypass revalidation. */ }
     }
@@ -55,7 +64,7 @@ class AuthorizedVaultBackend implements VaultBackend {
       }
     };
     await revalidate();
-    const result = await this.tool.run(name, callback);
+    const result = await this.tool.run(Object.freeze({ name, grants }), callback);
     await revalidate();
     return result;
   }
@@ -63,7 +72,7 @@ class AuthorizedVaultBackend implements VaultBackend {
   private async invoke<T>(action: PathAction, execute: (backend: FilesystemVaultBackend) => Promise<T>): Promise<T> {
     let allowed = false;
     try {
-      const authorization = new OperationAuthorization(this.context, this.options.grants, this.options.vaultId, this.options.resource, this.tool.getStore() ?? "", action, this.options.verifyRequest);
+      const authorization = new OperationAuthorization(this.context, this.tool.getStore()?.grants ?? this.options.grants, this.options.vaultId, this.options.resource, this.tool.getStore()?.name ?? "", action, this.options.verifyRequest);
       await authorization.revalidate();
       const result = await execute(this.backend.withAuthorization(authorization));
       await authorization.revalidate();
@@ -109,7 +118,7 @@ class AuthorizedVaultBackend implements VaultBackend {
     return this.invoke("search", (backend) => {
       // Explicit denied folders fail generically, never enumerate their contents.
       if (query.folder) {
-        const authorization = new OperationAuthorization(this.context, this.options.grants, this.options.vaultId, this.options.resource, this.tool.getStore() ?? "", "search");
+        const authorization = new OperationAuthorization(this.context, this.tool.getStore()?.grants ?? this.options.grants, this.options.vaultId, this.options.resource, this.tool.getStore()?.name ?? "", "search");
         authorization.assertPath(query.folder);
       }
       return backend.search(query);
