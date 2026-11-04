@@ -1,0 +1,42 @@
+{
+  "observed": "2026-11-04",
+  "stable": {
+    "version": "0.1.0",
+    "gitHead": "d2974e7d828061091a107bd9e5678e360b222ab6",
+    "dist.integrity": "sha512-LA0ZpptcX/2Al9NBe+CFgIp2/aqzn/JFP/xiVS9CMsqU5K7ml6KSZFa+4m1XBVCTwgPE2bWdl4Hby3KLoHcT+g==",
+    "dist.attestations": {
+      "url": "https://registry.npmjs.org/-/npm/v1/attestations/obsidian-vaultbridge-mcp@0.1.0",
+      "provenance": {
+        "predicateType": "https://slsa.dev/provenance/v1"
+      }
+    },
+    "repository": {
+      "url": "git+https://github.com/thinhnq3009/obsidian-vaultbridge-mcp.git",
+      "type": "git"
+    }
+  },
+  "alpha": {
+    "version": "0.1.0-alpha.0",
+    "dist.integrity": "sha512-FM0RpS9d4P61kNoTpY2siYr6k/y8C4+mZ1arIeDtInNZhHt1BZ6SvGjwQiuXwmNtsfF5TiP1P6tCVEYn9KM57A==",
+    "repository": {
+      "url": "git+https://github.com/thinhnq3009/obsidian-local-rest-mcp.git",
+      "type": "git"
+    }
+  },
+  "distTags": {
+    "alpha": "0.1.0-alpha.0",
+    "latest": "0.1.0"
+  },
+  "registrySmoke": {
+    "command": "npm run smoke:package -- obsidian-vaultbridge-mcp@0.1.0",
+    "Node24.22.1": "both executables passed against disposable installed consumer/vault",
+    "Node22.23.4": "both executables passed against disposable installed consumer/vault"
+  },
+  "limitations": [
+    "alpha.0 registry metadata provides no gitHead or attestation field; exact publisher source is not established",
+    "Attestation URL presence is metadata observation, not a new cryptographic provenance verification",
+    "npm.io observed 2026-11-03 still listed alpha.0; index refresh/scoring behavior is externally controlled",
+    "No publication, retag, version change, alert dismissal or release approval"
+  ],
+  "currentPackSmoke": "Node24.22.1: both executables passed; current owner-UI/artwork contract retained"
+}
