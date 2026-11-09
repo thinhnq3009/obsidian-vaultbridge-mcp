@@ -13,8 +13,12 @@ const messages = {
   expired: "Your session has expired. Sign in again to continue.",
 };
 
-/** Visual reference only. Never calls an owner API, persists credentials or resumes OAuth. */
-export function LoginForm({ state = "default" }: { state?: PreviewState }) {
+/** The preview never submits credentials; the live entry supplies its own handler. */
+export function LoginForm({ state = "default", onSignIn, feedback: liveFeedback }: {
+  state?: PreviewState;
+  onSignIn?: (credentials: { username: string; password: string }) => void;
+  feedback?: string;
+}) {
   const id = useId();
   const usernameRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
@@ -22,7 +26,7 @@ export function LoginForm({ state = "default" }: { state?: PreviewState }) {
   const [errors, setErrors] = useState({ username: "", password: "" });
   const [submitted, setSubmitted] = useState(false);
   const blocked = state === "loading" || state === "disabled" || state === "rate-limited";
-  const feedback = state === "error" || state === "rate-limited" || state === "expired" ? messages[state] : "";
+  const feedback = liveFeedback ?? (state === "error" || state === "rate-limited" || state === "expired" ? messages[state] : "");
 
   function submit(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -36,10 +40,12 @@ export function LoginForm({ state = "default" }: { state?: PreviewState }) {
     setSubmitted(false);
     if (next.username) { usernameRef.current?.focus(); return; }
     if (next.password) { passwordRef.current?.focus(); return; }
-    // Clear password-manager / typed values rather than retaining preview credentials.
+    const credentials = { username: usernameRef.current!.value.trim(), password: passwordRef.current!.value };
+    // Never retain passwords in React state, URLs or browser storage.
     form.reset();
     setShowPassword(false);
-    setSubmitted(true);
+    if (onSignIn) onSignIn(credentials);
+    else setSubmitted(true);
   }
 
   return (
@@ -78,13 +84,15 @@ export function LoginForm({ state = "default" }: { state?: PreviewState }) {
             {errors.password && <p id={`${id}-password-error`} className="vb-field-error">{errors.password}</p>}
           </div>
         </div>
-        {feedback && <VBStatus tone={state === "expired" ? "warning" : "danger"} className="mt-4">{feedback} (Preview)</VBStatus>}
+        {feedback && <VBStatus tone={state === "expired" ? "warning" : "danger"} className="mt-4">{feedback}{!onSignIn && " (Preview)"}</VBStatus>}
         {submitted && <VBStatus className="mt-4">Preview only. No credentials were sent. Fields cleared.</VBStatus>}
         <VBButton type="submit" loading={state === "loading"} disabled={blocked} className="mt-6 w-full">
-          {state === "loading" ? "Signing in… (preview)" : "Sign in securely"}
+          {state === "loading" ? (onSignIn ? "Signing in…" : "Signing in… (preview)") : "Sign in securely"}
           {state !== "loading" && <ArrowRight size={18} aria-hidden="true" />}
         </VBButton>
-        <p id={`${id}-preview`} className="vb-muted mt-3 text-center text-xs">Static preview only. Do not enter real credentials.</p>
+        <p id={`${id}-preview`} className="vb-muted mt-3 text-center text-xs">{onSignIn
+          ? "Local owner sign-in. Vault access requires separate consent."
+          : "Static preview only. Do not enter real credentials."}</p>
       </form>
       <div className="vb-auth-footer mt-6">
         <div className="vb-divider">LOCAL OWNER ACCESS</div>
@@ -92,7 +100,7 @@ export function LoginForm({ state = "default" }: { state?: PreviewState }) {
           trigger={<VBButton id="local-help" variant="ghost" className="vb-recovery">Need help accessing your vault?</VBButton>}>
           <p className="vb-muted text-sm">Stop the owner service, then run <code>owner-auth --recover-owner</code> locally.
             Follow the CLI instructions for the one-time recovery token. Recovery revokes all sessions.
-            This preview cannot perform recovery or sign-in. There is no public registration or email reset.</p>
+            {!onSignIn && "This preview cannot perform recovery or sign-in. "}There is no public registration or email reset.</p>
         </VBDialog>
         <p className="vb-security-note vb-muted flex items-center gap-3 text-xs">
           <ShieldCheck size={26} className="shrink-0" aria-hidden="true" />

@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -54,7 +54,7 @@ try {
     for (const file of pack.files) {
       assert(file.path.startsWith("dist/") || ["package.json", "README.md", "MIGRATION.md", "CHANGELOG.md", "RELEASING.md", ".env.example"].includes(file.path), `Unexpected packed file: ${file.path}`);
     }
-    for (const entry of ["dist/owner-ui/index.html", "dist/owner-ui/assets/obsidian-crystal-login-bg.png", "dist/owner-ui/assets/vaultbridge-crystal-mark.png"]) {
+    for (const entry of ["dist/owner-ui/index.html", "dist/owner-ui/owner.html", "dist/owner-ui/assets/obsidian-crystal-login-bg.png", "dist/owner-ui/assets/vaultbridge-crystal-mark.png"]) {
       assert(pack.files.some((file) => file.path === entry), `Missing packed UI entry: ${entry}`);
     }
     artifact = path.join(temporary, pack.filename);
@@ -97,7 +97,7 @@ try {
     const uiHtml = await fs.readFile(path.join(uiRoot, "index.html"), "utf8");
     assert(uiHtml.includes("Crystal preview"));
     assert(!uiHtml.includes("/src/main.tsx"), "Package must contain built UI, not a Vite source entry");
-    const assets = [...uiHtml.matchAll(/(?:src|href)="(\.\/assets\/[^"]+\.(?:js|css))"/gu)].map((match) => match[1]!);
+    const assets = [...uiHtml.matchAll(/(?:src|href)="(\/assets\/[^"]+\.(?:js|css))"/gu)].map((match) => `.${match[1]!}`);
     assert(assets.some((asset) => asset.endsWith(".js")), "Missing bundled UI script");
     assert(assets.some((asset) => asset.endsWith(".css")), "Missing bundled UI CSS");
     for (const asset of assets) {
@@ -112,7 +112,36 @@ try {
     const mark = await fs.readFile(path.join(uiRoot, "assets/vaultbridge-crystal-mark.png"));
     assert.equal(createHash("sha256").update(mark).digest("hex"), "a2efdebc474b82c64bae07920f7f4f79933486fe4bf94fdeda0bc055e2f161e2", "User-provided brand mark must survive packaging byte-for-byte");
   }
-  assert(!await fs.stat(path.join(consumer, "node_modules/vite")).catch(() => undefined), "Consumer must run without Vite");
+  if (!historicalPublished) {
+    assert(!await fs.stat(path.join(consumer, "node_modules/vite")).catch(() => undefined), "Consumer must run without Vite");
+    // Exercise the compiled route from an installed consumer, not the source tree
+    // or repository cwd. No Vite/devDependencies may be needed at runtime.
+    execFileSync(process.execPath, ["--input-type=module", "-e", `
+      import assert from "node:assert/strict";
+      import { startOwnerServer } from ${JSON.stringify(pathToFileURL(path.join(installed, "dist/auth/http.js")).href)};
+      const owner = await startOwnerServer({
+        directory: ${JSON.stringify(path.join(temporary, "owner-identity"))},
+        vaultPath: ${JSON.stringify(vault)}, port: 0,
+        ownerPassword: "Disposable-package-password-123!",
+      });
+      try {
+        const response = await fetch(owner.origin + "/login");
+        assert.equal(response.status, 200);
+        const html = await response.text();
+        assert(html.includes('<div id="root"></div>'));
+        assert(!html.includes('id="login-form"'));
+        const assets = [...html.matchAll(/(?:src|href)="(\\/assets\\/[^"]+)"/g)];
+        assert(assets.length >= 2);
+        for (const [, asset] of assets) {
+          const resource = await fetch(new URL(asset, owner.origin));
+          assert.equal(resource.status, 200);
+          assert(!resource.headers.get("content-type").includes("text/html"));
+        }
+        assert.equal((await fetch(owner.origin + "/assets/missing.js")).status, 404);
+      } finally { await owner.close(); }
+    `], { cwd: consumer, stdio: "pipe", timeout: 30000 });
+    process.stdout.write("Installed consumer: React /login and built assets passed without Vite\n");
+  }
   const readme = await fs.readFile(path.join(installed, "README.md"), "utf8");
   assert(readme.includes(`npx ${canonical}@${isAlpha ? "alpha" : manifest.version}`));
   assert(readme.includes(isAlpha ? "Early preview" : `v${manifest.version}`));

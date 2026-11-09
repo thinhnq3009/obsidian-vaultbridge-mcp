@@ -28,8 +28,8 @@
   },
   "scripts": {
     "build": "node scripts/build-all.mjs",
-    "dev": "tsx watch --clear-screen=false scripts/dev-oauth.ts",
-    "dev:oauth": "tsx watch --clear-screen=false scripts/dev-oauth.ts",
+    "dev": "npm run build:web && tsx watch --clear-screen=false scripts/dev-oauth.ts",
+    "dev:oauth": "npm run build:web && tsx watch --clear-screen=false scripts/dev-oauth.ts",
     "dev:stdio": "tsx watch --clear-screen=false src/index.ts --stdio",
     "start": "node dist/index.js",
     "prepack": "npm run build",

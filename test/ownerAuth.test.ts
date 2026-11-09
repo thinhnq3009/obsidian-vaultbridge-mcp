@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import * as fsPromises from "node:fs/promises";
 import http from "node:http";
 import { setTimeout } from "node:timers/promises";
 import { spawn, spawnSync } from "node:child_process";
@@ -16,6 +17,7 @@ import { ownerHtml, ownerScript } from "../src/auth/ui.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
+vi.mock("node:fs/promises", { spy: true });
 vi.setConfig({ testTimeout: 30000, hookTimeout: 30000 });
 
 type Service = Awaited<ReturnType<typeof startOwnerServer>>;
@@ -68,6 +70,92 @@ async function login() {
 }
 
 describe("local owner HTTP lifecycle", () => {
+  it.runIf(process.env.VAULTBRIDGE_BROWSER_TEST === "1")("keeps password rotation and recovery reachable from the React login", async () => {
+    const { chromium, expect: browserExpect } = await import("@playwright/test");
+    const browser = await chromium.launch();
+    try {
+      service = await startOwnerServer({ directory, vaultPath, port: 0 });
+      const page = await browser.newPage();
+      await page.goto(`${service.origin}/login`);
+      await page.getByLabel("Username", { exact: true }).fill("obsidian-admin");
+      await page.getByLabel("Password", { exact: true }).fill("admin39145");
+      await page.getByRole("button", { name: "Sign in securely" }).click();
+      await browserExpect(page).toHaveURL(`${service.origin}/admin`);
+      await browserExpect(page.locator("#rotation-warning")).toBeVisible();
+      await page.locator('[name="currentPassword"]').fill("admin39145");
+      await page.locator('[name="newPassword"]').fill(password);
+      await page.getByRole("button", { name: "Change password and sign out" }).click();
+      await browserExpect(page.locator("#login")).toBeVisible();
+      await page.goto(`${service.origin}/login`);
+      await page.getByLabel("Username", { exact: true }).fill("obsidian-admin");
+      await page.getByLabel("Password", { exact: true }).fill(password);
+      await page.getByRole("button", { name: "Sign in securely" }).click();
+      await browserExpect(page.locator("#account")).toBeVisible();
+      await browserExpect(page.locator("#rotation-warning")).toBeHidden();
+      await service.close(); service = undefined;
+      service = await startOwnerServer({ directory, vaultPath, port: 0, recover: true });
+      await page.goto(`${service.origin}/login`);
+      await browserExpect(page).toHaveURL(`${service.origin}/admin`);
+      await browserExpect(page.locator("#setup")).toBeVisible();
+      await page.locator('[name="token"]').fill(fs.readFileSync(service.tokenPath!, "utf8"));
+      await page.locator('#setup-form [name="password"]').fill("Recovered-disposable-password-123!");
+      await page.getByRole("button", { name: "Save owner" }).click();
+      await browserExpect(page.locator("#setup")).toBeHidden();
+      await page.goto(`${service.origin}/login`);
+      await page.getByLabel("Username", { exact: true }).fill("obsidian-admin");
+      await page.getByLabel("Password", { exact: true }).fill("Recovered-disposable-password-123!");
+      await page.getByRole("button", { name: "Sign in securely" }).click();
+      await browserExpect(page.locator("#account")).toBeVisible();
+    } finally { await browser.close(); }
+  }, 60000);
+
+  it("serves the built React login rather than the legacy owner shell", async () => {
+    await start();
+    const response = await fetch(`${service!.origin}/login?state=opaque-oauth-state`);
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain('<div id="root"></div>');
+    expect(html).toMatch(/type="module"/u);
+    expect(html).not.toContain('id="login-form"');
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const nonce = /name="csp-nonce" content="([^"]+)"/u.exec(html)![1]!;
+    expect(response.headers.get("content-security-policy")).toContain(`style-src 'self' 'nonce-${nonce}'`);
+    expect(response.headers.get("content-security-policy")).not.toContain("unsafe-inline");
+    expect(await (await fetch(`${service!.origin}/login`)).text()).not.toContain(nonce);
+    const assets = [...html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/gu)].map((match) => match[1]!);
+    expect(assets.some((asset) => asset.endsWith(".js"))).toBe(true);
+    expect(assets.some((asset) => asset.endsWith(".css"))).toBe(true);
+    for (const asset of [...assets, "/assets/obsidian-crystal-login-bg.png", "/assets/vaultbridge-crystal-mark.png"]) {
+      const resource = await fetch(new URL(asset, service!.origin));
+      expect(resource.status).toBe(200);
+      expect(resource.headers.get("content-type")).not.toContain("text/html");
+    }
+    // No broad SPA fallback may hide missing assets, unknown APIs or MCP.
+    for (const route of ["/assets/missing.js", "/assets/", "/unknown", "/mcp"]) {
+      const missing = await fetch(new URL(route, service!.origin));
+      expect(missing.status).toBe(404);
+      expect(missing.headers.get("content-type")).not.toContain("text/html");
+    }
+    expect((await fetch(`${service!.origin}/api/auth/missing`)).status).toBe(401);
+    expect((await fetch(`${service!.origin}/assets/.hidden`)).status).toBe(403);
+    expect((await post("/assets/missing.js", {})).status).toBe(405);
+    expect(await (await fetch(`${service!.origin}/consent`)).text()).toContain('id="oauth"');
+    expect(await (await fetch(`${service!.origin}/admin`)).text()).toContain('id="account"');
+  });
+
+  it("fails explicitly without build output instead of falling back to the old login", async () => {
+    await start();
+    const read = vi.spyOn(fsPromises, "readFile").mockRejectedValueOnce(new Error("Missing build"));
+    try {
+      const response = await fetch(`${service!.origin}/login`);
+      expect(response.status).toBe(503);
+      expect(await response.text()).toContain("Run npm run build");
+    } finally { read.mockRestore(); }
+    // An asset failure must not make the owner/session API unavailable.
+    expect((await fetch(`${service!.origin}/owner-state`)).status).toBe(200);
+    expect((await login()).response.status).toBe(200);
+  });
+
   it("rejects external or alternate-listener test targets before sending fixture credentials", async () => {
     await start();
     const outbound = vi.spyOn(globalThis, "fetch");

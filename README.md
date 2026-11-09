@@ -533,12 +533,17 @@ modes remain available. No automatic OAuth migration is performed.
 See [AUTH-004 Phase B](docs/AUTH-004-phase-b.md) for owner-only consent/grants,
 request-scoped enforcement and live OAuth-to-MCP test boundaries.
 
-## Crystal owner UI foundation (FE-001, preview only)
+## Crystal owner login and UI reference
 
 The React/Vite/TypeScript + Tailwind/shadcn UI reference lives in `web/`.
-It is **not connected to authentication**. Existing `/login`, `/consent`, `/admin`
-and `/owner.js` continue to use the legacy owner UI; no listener, API, CSP, CSRF,
-cookie or OAuth behavior is changed. Do not enter real credentials into the preview.
+The private owner listener serves the built React login at `/login` (and `/`).
+It uses the existing same-origin sign-in/session APIs and HttpOnly cookie, then
+continues to the existing `/admin` or signed OAuth `/consent` flow. Recovery and
+mandatory password rotation remain on `/admin`. Neither the public MCP listener
+nor its bearer-token authentication serves this UI.
+
+The separate Vite preview remains **preview-only**, never sends credentials and
+does not resume OAuth. Do not enter real credentials into that preview.
 
 ```bash
 # Use a supported Node version from package.json; install once from the root.
@@ -555,9 +560,16 @@ npm run verify:web    # starts/stops its own built preview; requires port 4173 f
 Frontend dependencies are root **devDependencies**, bundled at build time rather
 than installed as CLI runtime dependencies. The npm tarball includes
 `dist/owner-ui/index.html`, local JS/CSS, the unchanged original background PNG
-and the user-supplied transparent crystal logo. The latest approved mockup
+and the user-supplied transparent crystal logo, plus `owner.html` for live login.
+The latest approved mockup
 drives the left introduction / central artwork / right glass-panel composition.
-`npm start` still runs only the Node CLI; it does not start Vite or serve the new UI.
+`npm start` runs only the Node CLI, with no runtime Vite dependency. Build before
+starting it; `npm run dev` / `dev:oauth` build the UI before starting the watcher.
+After editing frontend files, rebuild with `npm run build:web` (or restart dev).
+Missing build output returns an explicit HTTP 503, never a silent legacy fallback.
+Only `/assets/*` is mounted as static content; missing files and unknown routes
+do not receive a catch-all SPA shell. Login CSP permits local styles/images and
+uses a per-response nonce for the recovery dialog's scroll-lock styles.
 The shared Crystal tokens are in `web/src/styles/tokens.css`; local shadcn-style
 primitives and VaultBridge wrappers are under `web/src/components/`. Form states
 are selectable in the preview or with `?state=error` (also `rate-limited`,
@@ -566,3 +578,15 @@ is created.
 
 See [FE-001 implementation and screenshot evidence](docs/FE-001-frontend-foundation.md)
 in the source repository for scope, validation, asset provenance and rollback.
+
+Live HTTP regression coverage runs with `npm test` after `npm run build`.
+To additionally run Chromium against disposable owner/OAuth/MCP listeners:
+
+```bash
+VAULTBRIDGE_BROWSER_TEST=1 npx vitest run test/oauthAuthorization.test.ts test/ownerAuth.test.ts \
+  -t 'renders the React login|keeps password rotation' --maxWorkers=1
+```
+
+This browser test substitutes only external client-metadata retrieval; owner
+login, cookies, signed consent, PKCE exchange and scoped MCP calls are real.
+Set `VAULTBRIDGE_BROWSER_EVIDENCE` to an absolute temporary directory for screenshots.

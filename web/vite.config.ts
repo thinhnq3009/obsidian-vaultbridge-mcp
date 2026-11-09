@@ -5,7 +5,7 @@ import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
   root: fileURLToPath(new URL(".", import.meta.url)),
-  base: "./",
+  base: "/",
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
@@ -18,5 +18,11 @@ export default defineConfig({
     // Root build owns cleanup; don't remove the backend or sibling artifacts.
     emptyOutDir: false,
     sourcemap: false,
+    rollupOptions: {
+      input: {
+        preview: fileURLToPath(new URL("./index.html", import.meta.url)),
+        owner: fileURLToPath(new URL("./owner.html", import.meta.url)),
+      },
+    },
   },
 });

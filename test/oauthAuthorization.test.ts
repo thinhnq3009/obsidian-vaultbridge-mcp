@@ -78,6 +78,91 @@ async function connect(h: Harness, token: string, scheme = "Bearer") {
 }
 
 describe("AUTH-004 live verified OAuth → SQLite grant → request backend → MCP", () => {
+  it.runIf(process.env.VAULTBRIDGE_BROWSER_TEST === "1")("renders the React login under real CSP and completes browser OAuth → scoped MCP", async () => {
+    const { chromium, expect: browserExpect } = await import("@playwright/test");
+    const browser = await chromium.launch();
+    try {
+      const h = await setup();
+      const pending = await h.begin();
+      expect(pending.response.status).toBe(200);
+      const loginUrl = new URL(pending.body.url!);
+      expect(loginUrl.origin).toBe(h.ownerOrigin);
+      const context = await browser.newContext();
+      const page = await context.newPage();
+      const errors: string[] = [];
+      page.on("pageerror", (error) => { errors.push(error.message); });
+      page.on("requestfailed", (request) => { errors.push(`Failed: ${new URL(request.url()).pathname}`); });
+      page.on("console", (message) => { if (message.text().startsWith("CSP:")) errors.push(message.text()); });
+      await page.addInitScript(() => {
+        document.addEventListener("securitypolicyviolation", (event) => { console.error(`CSP: ${event.violatedDirective}`); });
+      });
+      await page.goto(loginUrl.href);
+      await browserExpect(page.getByLabel("Username", { exact: true })).toBeEnabled();
+      await browserExpect(page.getByText("Welcome back")).toBeVisible();
+      await browserExpect(page.getByText("Static preview only.", { exact: false })).toHaveCount(0);
+      await browserExpect(page.getByLabel("Preview state")).toHaveCount(0);
+      await page.getByRole("button", { name: "Need help accessing your vault?" }).click();
+      await browserExpect(page.getByRole("dialog")).toBeVisible();
+      await page.keyboard.press("Escape");
+      await browserExpect(page.getByRole("dialog")).toHaveCount(0);
+      const evidence = process.env.VAULTBRIDGE_BROWSER_EVIDENCE;
+      if (evidence) {
+        await fs.mkdir(evidence, { recursive: true });
+        await page.setViewportSize({ width: 1440, height: 900 });
+        await page.screenshot({ path: path.join(evidence, "login-desktop.png"), fullPage: true });
+        await page.setViewportSize({ width: 390, height: 844 });
+        await page.screenshot({ path: path.join(evidence, "login-mobile.png"), fullPage: true });
+      }
+      // Validation, visibility toggle, generic errors and Retry-After are live,
+      // not preview state parameters.
+      await page.getByRole("button", { name: "Sign in securely" }).click();
+      await browserExpect(page.getByLabel("Username", { exact: true })).toBeFocused();
+      await page.getByLabel("Username", { exact: true }).fill("unknown-owner");
+      await page.getByLabel("Password", { exact: true }).fill("incorrect-disposable-password");
+      await page.getByRole("button", { name: "Show password" }).click();
+      await browserExpect(page.getByLabel("Password", { exact: true })).toHaveAttribute("type", "text");
+      await page.getByRole("button", { name: "Sign in securely" }).click();
+      await browserExpect(page.getByRole("alert")).toContainText("Check your credentials");
+      await browserExpect(page.getByLabel("Password", { exact: true })).toHaveValue("");
+      await page.getByLabel("Username", { exact: true }).fill("unknown-owner");
+      await page.getByLabel("Password", { exact: true }).fill("incorrect-disposable-password");
+      const throttled = page.waitForResponse((response) => response.url().endsWith("/api/auth/sign-in/email"));
+      await page.getByRole("button", { name: "Sign in securely" }).click();
+      await browserExpect(page.getByRole("alert")).toContainText("Retry after");
+      const retry = (await throttled).headers()["retry-after"];
+      await new Promise((resolve) => setTimeout(resolve, Number(retry ?? 1) * 1000));
+      await page.getByLabel("Username", { exact: true }).fill("owner@example.test");
+      await page.getByLabel("Password", { exact: true }).fill(password);
+      await page.getByLabel("Password", { exact: true }).press("Enter");
+      await browserExpect(page).toHaveURL(/\/consent\?/u);
+      await browserExpect(page.locator("#oauth")).toBeVisible();
+      await browserExpect(page.locator("#oauth-details")).toContainText(clientA);
+      const cookie = (await context.cookies()).find((value) => value.name.endsWith("session_token"));
+      expect(cookie?.httpOnly).toBe(true);
+      expect(cookie?.sameSite).toBe("Strict");
+      expect(await page.evaluate(() => localStorage.length + sessionStorage.length)).toBe(0);
+      await page.route("http://127.0.0.1:49152/callback?**", (route) => route.fulfill({ contentType: "text/plain", body: "Disposable OAuth callback" }));
+      await page.locator("#grant-path").fill("Notes");
+      await page.locator("#oauth-accept").click();
+      await browserExpect(page).toHaveURL(/\/callback\?code=/u);
+      const callback = new URL(page.url());
+      expect(callback.searchParams.get("state")).toBe(pending.state);
+      const token = await h.exchange({ code: callback.searchParams.get("code")!, verifier: pending.verifier });
+      const client = await connect(h, token.access_token);
+      expect((await client.callTool({ name: "obsidian_read_note", arguments: { path: "Notes/A.md" } })).isError).not.toBe(true);
+      expect((await client.callTool({ name: "obsidian_read_note", arguments: { path: "Secret/A.md" } })).isError).toBe(true);
+      expect((await client.callTool({ name: "obsidian_write_note", arguments: { path: "Notes/Denied.md", content: "denied" } })).isError).toBe(true);
+      await page.goto(`${h.ownerOrigin}/login`);
+      await browserExpect(page).toHaveURL(`${h.ownerOrigin}/admin`);
+      await browserExpect(page.locator("#account")).toBeVisible();
+      await page.locator("#logout").click();
+      await browserExpect(page.locator("#login")).toBeVisible();
+      await page.goto(`${h.ownerOrigin}/login`);
+      await browserExpect(page.getByLabel("Username", { exact: true })).toBeEnabled();
+      expect(errors).toEqual([]);
+    } finally { await browser.close(); }
+  }, 60000);
+
   it.each(["bearer", "BEARER"])("runs the strict read-only E2E probe with a %s scheme", async (scheme) => {
     const h = await setup();
     const token = await provision(h, clientA, "Notes");

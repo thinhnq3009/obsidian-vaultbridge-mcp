@@ -1,4 +1,8 @@
 import http from "node:http";
+import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import type { Request, Response } from "express";
 import express from "express";
 import { MemoryStore, rateLimit } from "express-rate-limit";
@@ -55,7 +59,25 @@ export async function startOwnerServer(options: { directory: string; vaultPath: 
     standardHeaders: "draft-8", legacyHeaders: false,
   }));
   app.use(express.json({ limit: "8kb", inflate: false, strict: true }));
-  app.get(["/", "/login", "/admin", "/consent"], (_request, response) => { response.type("html").send(ownerHtml); });
+  // Resolve relative to the module, not cwd: packaged execution and tsx development
+  // both serve the same build output. Never silently fall back to the legacy login.
+  const packagedUi = new URL("../owner-ui/", import.meta.url);
+  const uiDirectory = existsSync(packagedUi) ? packagedUi : new URL("../../dist/owner-ui/", import.meta.url);
+  app.get(["/", "/login"], async (_request, response) => {
+    try {
+      const html = await readFile(new URL("owner.html", uiDirectory), "utf8");
+      const nonce = randomBytes(18).toString("base64");
+      // Radix's modal scroll-lock stylesheet uses this nonce; scripts stay self-only.
+      response.set("Content-Security-Policy", `default-src 'none'; script-src 'self'; style-src 'self' 'nonce-${nonce}'; img-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`);
+      response.type("html").send(html.replace("OWNER_STYLE_NONCE", nonce));
+    } catch {
+      response.status(503).type("text").send("Owner login assets unavailable. Run npm run build before starting the server.");
+    }
+  });
+  app.use("/assets", express.static(fileURLToPath(new URL("assets/", uiDirectory)), {
+    dotfiles: "deny", index: false, redirect: false, fallthrough: false,
+  }));
+  app.get(["/admin", "/consent"], (_request, response) => { response.type("html").send(ownerHtml); });
   app.get("/owner.js", (_request, response) => { response.type("js").send(ownerScript); });
   let recoveryComplete = false;
   app.get("/owner-state", (_request, response) => { response.json({ hasOwner: owner!.hasOwner(), recovering: owner!.recovering && !recoveryComplete }); });
@@ -89,7 +111,7 @@ export async function startOwnerServer(options: { directory: string; vaultPath: 
   app.use((error: unknown, _request: Request, response: Response, _next: express.NextFunction) => {
     void _next;
     const status = typeof error === "object" && error !== null && "status" in error ? error.status : 500;
-    response.status(status === 413 ? 413 : status === 400 ? 400 : 500).json({ error: "Owner request rejected" });
+    response.status(typeof status === "number" && [400, 403, 404, 405, 413].includes(status) ? status : 500).json({ error: "Owner request rejected" });
   });
   const server = http.createServer({ maxHeaderSize: 8192 }, app);
   server.requestTimeout = 15000;

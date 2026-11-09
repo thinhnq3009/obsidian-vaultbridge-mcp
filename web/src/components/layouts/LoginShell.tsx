@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { Blocks, LockKeyhole, ShieldCheck } from "lucide-react";
 import { BrandMark, BrandName } from "../Brand.js";
 
-export function LoginShell({ children, controls }: { children: ReactNode; controls: ReactNode }) {
+export function LoginShell({ children, controls }: { children: ReactNode; controls?: ReactNode }) {
   return (
     <div className="vb-login-shell">
       <div className="vb-login-art" role="img" aria-label="Obsidian crystal glowing cyan and violet above a mountain lake" />

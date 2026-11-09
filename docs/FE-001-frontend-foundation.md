@@ -1,5 +1,11 @@
 # FE-001 — Crystal frontend foundation
 
+> Historical FE-001 implementation record. The subsequent login cutover now
+> serves the shared Crystal React form on the private owner's `/login` and `/`.
+> The standalone reference remains preview-only; `/admin`, recovery, password
+> rotation and `/consent` retain the existing owner UI. See the README's
+> "Crystal owner login and UI reference" section for current build/routing behavior.
+
 ## Scope and base
 
 Implemented from `develop` at `3a73530da5b44f401a62f8b7c0991d82a2051129`,
