@@ -41,7 +41,8 @@
     "build:web": "npm --prefix web run build",
     "dev:web": "npm --prefix web run dev",
     "preview:web": "npm --prefix web run preview",
-    "verify:web": "node scripts/verify-owner-ui.mjs"
+    "verify:web": "node scripts/verify-owner-ui.mjs",
+    "verify:owner-ui": "node scripts/verify-owner-auth-ui.mjs"
   },
   "keywords": [
     "codex",

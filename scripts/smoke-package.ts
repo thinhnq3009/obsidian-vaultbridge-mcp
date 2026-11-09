@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import type { startOwnerServer as startOwnerServerType } from "../src/auth/http.js";
 
 type Manifest = {
   name: string;
@@ -23,6 +25,7 @@ type Manifest = {
   scripts: { test: string };
 };
 type PackResult = { filename: string; integrity: string; files: Array<{ path: string }> };
+type OwnerServerModule = { startOwnerServer: typeof startOwnerServerType };
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const npmCli = process.env.npm_execpath;
@@ -34,10 +37,35 @@ const cache = path.join(temporary, "cache");
 const canonical = "obsidian-vaultbridge-mcp";
 const legacy = "obsidian-local-rest-mcp";
 const repository = `https://github.com/thinhnq3009/${canonical}`;
+let ownerService: { origin: string; close(): Promise<void> } | undefined;
 
 function npm(args: string[], cwd: string): string {
   return execFileSync(process.execPath, [npmCli!, ...args], {
     cwd, encoding: "utf8", timeout: 120_000, stdio: ["ignore", "pipe", "inherit"],
+  });
+}
+
+function getPrivateOwnerAsset(origin: string, route: string): Promise<{ status: number; contentType?: string; body: string }> {
+  const target = new URL(route, origin);
+  assert.equal(target.origin, origin);
+  return new Promise((resolve, reject) => {
+    const request = http.get({
+      hostname: "127.0.0.1",
+      port: Number(target.port),
+      path: target.pathname,
+    }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk: Buffer) => { chunks.push(chunk); });
+      response.on("error", reject);
+      response.on("end", () => {
+        resolve({
+          status: response.statusCode ?? 500,
+          ...(typeof response.headers["content-type"] === "string" ? { contentType: response.headers["content-type"] } : {}),
+          body: Buffer.concat(chunks).toString("utf8"),
+        });
+      });
+    });
+    request.on("error", reject);
   });
 }
 
@@ -54,7 +82,7 @@ try {
     for (const file of pack.files) {
       assert(file.path.startsWith("dist/") || ["package.json", "README.md", "MIGRATION.md", "CHANGELOG.md", "RELEASING.md", ".env.example"].includes(file.path), `Unexpected packed file: ${file.path}`);
     }
-    for (const entry of ["dist/owner-ui/index.html", "dist/owner-ui/assets/obsidian-crystal-login-bg.png", "dist/owner-ui/assets/vaultbridge-crystal-mark.png"]) {
+    for (const entry of ["dist/owner-ui/index.html", "dist/owner-ui/owner.html", "dist/owner-ui/assets/obsidian-crystal-login-bg.png", "dist/owner-ui/assets/vaultbridge-crystal-mark.png"]) {
       assert(pack.files.some((file) => file.path === entry), `Missing packed UI entry: ${entry}`);
     }
     artifact = path.join(temporary, pack.filename);
@@ -95,9 +123,13 @@ try {
   if (!historicalPublished) {
     const uiRoot = path.join(installed, "dist/owner-ui");
     const uiHtml = await fs.readFile(path.join(uiRoot, "index.html"), "utf8");
+    const ownerHtml = await fs.readFile(path.join(uiRoot, "owner.html"), "utf8");
     assert(uiHtml.includes("Crystal preview"));
     assert(!uiHtml.includes("/src/main.tsx"), "Package must contain built UI, not a Vite source entry");
-    const assets = [...uiHtml.matchAll(/(?:src|href)="(\.\/assets\/[^"]+\.(?:js|css))"/gu)].map((match) => match[1]!);
+    assert(!ownerHtml.includes("/src/owner-entry.tsx"), "Private owner entry must contain built assets, not Vite source");
+    const assets = [uiHtml, ownerHtml].flatMap((html) =>
+      [...html.matchAll(/(?:src|href)="(\.\/assets\/[^"]+\.(?:js|css))"/gu)].map((match) => match[1]!),
+    );
     assert(assets.some((asset) => asset.endsWith(".js")), "Missing bundled UI script");
     assert(assets.some((asset) => asset.endsWith(".css")), "Missing bundled UI CSS");
     for (const asset of assets) {
@@ -107,6 +139,26 @@ try {
         assert(css.includes("obsidian-crystal-login-bg.png"), "CSS must reference the packaged artwork");
       }
     }
+    const importedOwnerModule: unknown = await import(pathToFileURL(path.join(installed, "dist/auth/http.js")).href);
+    const { startOwnerServer } = importedOwnerModule as OwnerServerModule;
+    ownerService = await startOwnerServer({
+      directory: path.join(temporary, "owner-auth"),
+      vaultPath: vault,
+      port: 0,
+      ownerPassword: "DisposablePackageOwner123!",
+      ownerUiMode: "react",
+    });
+    const privateLogin = await getPrivateOwnerAsset(ownerService.origin, "/login");
+    assert.equal(privateLogin.status, 200);
+    const servedLogin = privateLogin.body;
+    assert(servedLogin.includes("VaultBridge Owner"), "Installed package must serve its private React owner entry");
+    for (const match of servedLogin.matchAll(/(?:src|href)="(\.\/assets\/[^"]+\.(?:js|css))"/gu)) {
+      const asset = await getPrivateOwnerAsset(ownerService.origin, match[1]!);
+      assert.equal(asset.status, 200, `Installed private owner asset must be served: ${match[1]}`);
+    }
+    assert.equal((await getPrivateOwnerAsset(ownerService.origin, "/recover")).status, 200);
+    await ownerService.close();
+    ownerService = undefined;
     const artwork = await fs.readFile(path.join(uiRoot, "assets/obsidian-crystal-login-bg.png"));
     assert.equal(createHash("sha256").update(artwork).digest("hex"), "09b3439af1755af8dc41a3c795d23368f5dc85af18343bc2b6e3fb5cf50615d4", "Original artwork must survive packaging byte-for-byte");
     const mark = await fs.readFile(path.join(uiRoot, "assets/vaultbridge-crystal-mark.png"));
@@ -174,5 +226,6 @@ try {
     }
   }
 } finally {
+  await ownerService?.close();
   await fs.rm(temporary, { recursive: true, force: true });
 }

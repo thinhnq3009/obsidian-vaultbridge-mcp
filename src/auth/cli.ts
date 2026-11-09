@@ -16,10 +16,11 @@ export function ownerOptions(env: NodeJS.ProcessEnv, argv: string[]) {
   }
   const parsed = z.object({
     MCP_OWNER_PORT: z.coerce.number().int().min(1).max(65535).default(39146),
+    MCP_OWNER_UI_MODE: z.enum(["legacy", "react"]).default("legacy"),
     MCP_AUTH_LOGIN_MAX_FAILURES: z.coerce.number().int().min(1).max(20).default(5),
     MCP_AUTH_LOGIN_WINDOW_SECONDS: z.coerce.number().int().min(1).max(86400).default(900),
   }).parse(merged);
-  return { port: parsed.MCP_OWNER_PORT, maxFailures: parsed.MCP_AUTH_LOGIN_MAX_FAILURES, windowSeconds: parsed.MCP_AUTH_LOGIN_WINDOW_SECONDS, recover: argv.includes("--recover-owner"),
+  return { port: parsed.MCP_OWNER_PORT, ownerUiMode: parsed.MCP_OWNER_UI_MODE, maxFailures: parsed.MCP_AUTH_LOGIN_MAX_FAILURES, windowSeconds: parsed.MCP_AUTH_LOGIN_WINDOW_SECONDS, recover: argv.includes("--recover-owner"),
     ...(env.MCP_OWNER_USERNAME !== undefined ? { ownerUsername: env.MCP_OWNER_USERNAME } : {}),
     ...(env.MCP_OWNER_PASSWORD !== undefined ? { ownerPassword: env.MCP_OWNER_PASSWORD } : {}) };
 }

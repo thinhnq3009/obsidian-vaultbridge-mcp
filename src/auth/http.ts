@@ -1,4 +1,8 @@
 import http from "node:http";
+import { constants as fsConstants } from "node:fs";
+import { lstat, open, realpath } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Request, Response } from "express";
 import express from "express";
 import { MemoryStore, rateLimit } from "express-rate-limit";
@@ -14,7 +18,9 @@ export function isOwnerRequestAllowed(peer: string | undefined, host: string | u
   return ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(peer ?? "") && host === expected.host && (origin === undefined || origin === expectedOrigin);
 }
 
-export async function startOwnerServer(options: { directory: string; vaultPath: string; port: number; ownerUsername?: string; ownerPassword?: string; recover?: boolean; maxFailures?: number; windowSeconds?: number; oauth?: Omit<OAuthProviderOptions, "ownerOrigin"> }) {
+type OwnerUiMode = "legacy" | "react";
+
+export async function startOwnerServer(options: { directory: string; vaultPath: string; port: number; ownerUsername?: string; ownerPassword?: string; recover?: boolean; maxFailures?: number; windowSeconds?: number; ownerUiMode?: OwnerUiMode; ownerUiDirectory?: string; oauth?: Omit<OAuthProviderOptions, "ownerOrigin"> }) {
   z.number().int().min(0).max(65535).parse(options.port);
   let owner: OwnerAuth | undefined;
   let origin = "";
@@ -22,10 +28,15 @@ export async function startOwnerServer(options: { directory: string; vaultPath: 
   app.disable("x-powered-by");
   app.set("trust proxy", false);
   const limiterStore = new MemoryStore();
+  const ownerUiDirectory = options.ownerUiDirectory ?? path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    import.meta.url.includes(`${path.sep}dist${path.sep}auth${path.sep}`) ? ".." : "../../dist",
+    "owner-ui",
+  );
   app.use((request, response, next) => {
     response.set({
       "Cache-Control": "no-store",
-      "Content-Security-Policy": "default-src 'none'; script-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+      "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
       "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY",
     });
     if (!owner) { response.sendStatus(503); return; }
@@ -55,7 +66,63 @@ export async function startOwnerServer(options: { directory: string; vaultPath: 
     standardHeaders: "draft-8", legacyHeaders: false,
   }));
   app.use(express.json({ limit: "8kb", inflate: false, strict: true }));
-  app.get(["/", "/login", "/admin", "/consent"], (_request, response) => { response.type("html").send(ownerHtml); });
+  async function sendOwnerUiAsset(relativePath: string, response: Response): Promise<void> {
+    if (relativePath.includes("\\") || relativePath.split("/").some((part) => !part || part === "." || part === ".." || part.startsWith("."))) {
+      response.sendStatus(404);
+      return;
+    }
+    const isEntry = relativePath === "owner.html";
+    const isAsset = /^assets\/[A-Za-z0-9._-]+\.(?:js|css|png|svg|woff2?)$/u.test(relativePath);
+    if (!isEntry && !isAsset) {
+      response.sendStatus(404);
+      return;
+    }
+    try {
+      const root = await realpath(ownerUiDirectory);
+      const file = await realpath(path.join(root, relativePath));
+      if (!file.startsWith(`${root}${path.sep}`)) {
+        response.sendStatus(404);
+        return;
+      }
+      const expected = await lstat(file);
+      if (!expected.isFile() || expected.isSymbolicLink()) {
+        response.sendStatus(404);
+        return;
+      }
+      const handle = await open(file, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+      let content: Buffer;
+      try {
+        const actual = await handle.stat();
+        if (!actual.isFile() || actual.dev !== expected.dev || actual.ino !== expected.ino) {
+          response.sendStatus(404);
+          return;
+        }
+        content = await handle.readFile();
+      } finally {
+        await handle.close();
+      }
+      const mime = relativePath.endsWith(".html") ? "text/html; charset=utf-8"
+        : relativePath.endsWith(".js") ? "text/javascript; charset=utf-8"
+          : relativePath.endsWith(".css") ? "text/css; charset=utf-8"
+            : relativePath.endsWith(".png") ? "image/png"
+              : relativePath.endsWith(".svg") ? "image/svg+xml"
+                : relativePath.endsWith(".woff") ? "font/woff" : "font/woff2";
+      response.set("Content-Type", mime).send(content);
+    } catch {
+      response.status(503).type("text/plain").send("Owner UI bundle unavailable. Build the package or select legacy mode.");
+    }
+  }
+  if (options.ownerUiMode === "react") {
+    app.get(["/login", "/recover"], async (_request, response) => { await sendOwnerUiAsset("owner.html", response); });
+    app.get("/assets/*asset", async (request, response) => {
+      const asset = request.params.asset;
+      const relativePath = Array.isArray(asset) ? asset.join("/") : asset;
+      await sendOwnerUiAsset(`assets/${relativePath}`, response);
+    });
+  }
+  app.get(["/", "/admin", "/consent", ...(options.ownerUiMode === "react" ? [] : ["/login", "/recover"])], (_request, response) => {
+    response.type("html").send(ownerHtml);
+  });
   app.get("/owner.js", (_request, response) => { response.type("js").send(ownerScript); });
   let recoveryComplete = false;
   app.get("/owner-state", (_request, response) => { response.json({ hasOwner: owner!.hasOwner(), recovering: owner!.recovering && !recoveryComplete }); });

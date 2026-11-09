@@ -505,6 +505,7 @@ Configuration precedence for the owner command: **CLI > ENV > working-directory
 | Setting | CLI | Default / bounds |
 | --- | --- | --- |
 | `MCP_OWNER_PORT` | `--owner-port` | 39146; 1–65535, always 127.0.0.1 |
+| `MCP_OWNER_UI_MODE` | — | `legacy` by default; `react` opts the private login/recovery/rotation routes into the built React app |
 | `MCP_OWNER_USERNAME` | — | `obsidian-admin`, first owner creation only |
 | `MCP_OWNER_PASSWORD` | — | `admin39145` (unsafe; mandatory rotation), first owner creation only |
 | `MCP_AUTH_LOGIN_MAX_FAILURES` | `--auth-login-max-failures` | 5; 1–20 |
@@ -533,12 +534,15 @@ modes remain available. No automatic OAuth migration is performed.
 See [AUTH-004 Phase B](docs/AUTH-004-phase-b.md) for owner-only consent/grants,
 request-scoped enforcement and live OAuth-to-MCP test boundaries.
 
-## Crystal owner UI foundation (FE-001, preview only)
+## Crystal owner UI (FE-001 / FE-002A)
 
-The React/Vite/TypeScript + Tailwind/shadcn UI reference lives in `web/`.
-It is **not connected to authentication**. Existing `/login`, `/consent`, `/admin`
-and `/owner.js` continue to use the legacy owner UI; no listener, API, CSP, CSRF,
-cookie or OAuth behavior is changed. Do not enter real credentials into the preview.
+The React/Vite/TypeScript + Tailwind/shadcn UI preview lives in `web/` and remains
+available at `npm run dev:web` without an owner API proxy. The production login,
+recovery and forced-rotation pages are a separate built entry served only by the
+private owner listener at `127.0.0.1:39146`. OAuth consent and legacy admin pages
+remain on their existing server-rendered UI in this phase. The default
+`MCP_OWNER_UI_MODE=legacy` is the rollback setting; select `react` only in a
+private `.env` after local validation. Never tunnel the owner listener.
 
 ```bash
 # Use a supported Node version from package.json; install once from the root.
@@ -550,19 +554,24 @@ npm run preview:web   # built reference at 127.0.0.1:4173
 # Optional browser evidence (separate loopback preview; no vault required):
 npx playwright install chromium
 npm run verify:web    # starts/stops its own built preview; requires port 4173 free
+
+# FE-002A browser E2E: actual private owner server, disposable auth DB/vault;
+# uses canonical owner port 39146 (override with OWNER_PORT if occupied).
+npm run verify:owner-ui
 ```
 
 Frontend dependencies are root **devDependencies**, bundled at build time rather
 than installed as CLI runtime dependencies. The npm tarball includes
-`dist/owner-ui/index.html`, local JS/CSS, the unchanged original background PNG
+`dist/owner-ui/owner.html` and `index.html`, local JS/CSS, the unchanged original background PNG
 and the user-supplied transparent crystal logo. The latest approved mockup
 drives the left introduction / central artwork / right glass-panel composition.
 `npm start` still runs only the Node CLI; it does not start Vite or serve the new UI.
 The shared Crystal tokens are in `web/src/styles/tokens.css`; local shadcn-style
-primitives and VaultBridge wrappers are under `web/src/components/`. Form states
-are selectable in the preview or with `?state=error` (also `rate-limited`,
-`loading`, `disabled`, `expired`). No simulated success, owner session or grant
-is created.
+primitives and VaultBridge wrappers are under `web/src/components/`. Preview
+form states remain selectable only in the preview entry or with `?state=error`
+(also `rate-limited`, `loading`, `disabled`, `expired`). Production auth uses the
+existing private owner APIs, HttpOnly cookie, same-origin CSRF header and
+server-validated session; no credential or token is written to browser storage.
 
 See [FE-001 implementation and screenshot evidence](docs/FE-001-frontend-foundation.md)
 in the source repository for scope, validation, asset provenance and rollback.

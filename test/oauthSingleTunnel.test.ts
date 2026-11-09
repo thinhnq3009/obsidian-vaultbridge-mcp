@@ -300,7 +300,7 @@ describe("AUTH-005A Single Tunnel OAuth Architecture (39145 public / 39146 priva
   });
 
   it("never exposes private owner UI or admin API routes on the public port", async () => {
-    const h = await setupSingleTunnel();
+    const h = await setupSingleTunnel({ mcpOwnerUiMode: "react" });
     const pending = await h.consent();
     const grant = await h.post("/oauth/grants", {
       oauth_query: pending.query,
@@ -312,8 +312,10 @@ describe("AUTH-005A Single Tunnel OAuth Architecture (39145 public / 39146 priva
 
     const privateRoutes = [
       "/login",
+      "/recover",
       "/consent",
       "/admin",
+      "/assets/owner-test.js",
       "/owner-state",
       "/api/auth/sign-in/email",
       "/api/auth/get-session",
