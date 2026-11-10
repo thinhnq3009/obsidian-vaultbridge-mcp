@@ -512,6 +512,9 @@ describe("owner storage and guard contracts", () => {
   it("validates CLI/ENV budgets without allowing zero/unlimited", () => {
     expect(ownerOptions({ MCP_AUTH_LOGIN_MAX_FAILURES: "8" }, ["--auth-login-max-failures", "3", "--owner-port=39147"]).maxFailures).toBe(3);
     expect(ownerOptions({}, []).windowSeconds).toBe(900);
+    expect(ownerOptions({}, []).ownerUiMode).toBe("legacy");
+    expect(ownerOptions({ MCP_OWNER_UI_MODE: "react" }, []).ownerUiMode).toBe("react");
+    expect(() => ownerOptions({ MCP_OWNER_UI_MODE: "public" }, [])).toThrow();
     for (const value of ["0", "-1", "1.5", "21", "bad"]) expect(() => ownerOptions({ MCP_AUTH_LOGIN_MAX_FAILURES: value }, [])).toThrow();
     expect(() => ownerOptions({}, ["--owner-port"])).toThrow("Missing");
   });

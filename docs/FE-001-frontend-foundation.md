@@ -192,3 +192,14 @@ Revert this frontend/build-only commit and rebuild the package. No database,
 grant, token, listener or live route migration needs to be undone. Until FE-002,
 the legacy owner UI is already the only UI served by the owner listener.
 No merge, npm publication or tunnel change is authorized by FE-001.
+
+## Follow-up — FE-002A
+
+The preceding section records FE-001's state at its original implementation.
+FE-002A adds a separate production owner entry without changing the FE-001
+preview: the private owner server serves `/login` and `/recover` from the built
+React bundle only when `MCP_OWNER_UI_MODE=react`; the default remains `legacy`.
+The server-rendered consent/admin compatibility routes, public 39145/private
+39146 topology and existing owner API contracts remain. See
+[FE-002A implementation and test evidence](FE-002A-real-owner-login.md).
+Consent, grants UI and dashboard are explicitly outside FE-002A.
