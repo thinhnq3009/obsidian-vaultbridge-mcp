@@ -68,5 +68,10 @@ Executed on Linux with Node `24.22.1`:
 - Browser screenshots and the machine-readable run report are in
   `docs/screenshots/fe-002a/`.
 
-GitHub CI and independent security review remain separate checks before this
-phase can be considered accepted.
+GitHub CI and CodeQL both passed on the initial PR head
+`00602c6c46774d47d7c86e6d2711dc65251b718b`; after resolving their two
+annotations with a manifest/inode-verified asset allowlist, the latest local
+head is `e28ebbf7552edcae1e956ab0280afdbe618f7cb5`. GitHub CI and CodeQL also
+passed on that follow-up head. GitHub automatically marked the old inline
+annotations outdated/resolved; no alert was manually dismissed and no thread
+was manually resolved. The PR remains a draft and still awaits human review.
