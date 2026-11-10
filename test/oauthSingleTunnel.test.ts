@@ -79,7 +79,8 @@ describe("AUTH-005A Single Tunnel OAuth Architecture (39145 public / 39146 priva
       publicOrigin: h.origin, ownerOrigin: h.ownerOrigin, cookie: h.cookie,
       notePath: "Notes/Doc.md", deniedPath: "Secret/Denied.md", expectedContent: "Permitted content",
     });
-  });
+  }, 15000); // Two consent/token flows plus actual read/write/delete and revocation.
+
 
   it("enforces 401 challenge with public-origin resource metadata on unauthenticated /mcp access", async () => {
     const h = await setupSingleTunnel();

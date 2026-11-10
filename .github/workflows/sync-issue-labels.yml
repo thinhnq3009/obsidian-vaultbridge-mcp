@@ -1,0 +1,84 @@
+name: Sync colored issue labels
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [develop]
+    paths:
+      - .github/issue-labels.json
+      - .github/workflows/sync-issue-labels.yml
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout configuration
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Create or update label colors and apply to tracked open issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from urllib.error import HTTPError
+          from urllib.parse import quote
+          from urllib.request import Request, urlopen
+
+          config = json.load(open(".github/issue-labels.json", encoding="utf-8"))
+          repo = os.environ["GH_REPOSITORY"]
+          base = f"https://api.github.com/repos/{repo}"
+          token = os.environ["GH_TOKEN"]
+
+          def api(method, path, payload=None):
+              raw = None if payload is None else json.dumps(payload).encode("utf-8")
+              req = Request(base + path, data=raw, method=method, headers={
+                  "Authorization": f"Bearer {token}",
+                  "Accept": "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+                  "Content-Type": "application/json",
+                  "User-Agent": "vaultbridge-issue-label-sync"
+              })
+              try:
+                  with urlopen(req, timeout=20) as response:
+                      return json.load(response)
+              except HTTPError as e:
+                  if e.code == 404:
+                      return None
+                  raise RuntimeError(f"{method} {path}: HTTP {e.code}") from e
+
+          labels = config["labels"]
+          defined = {label["name"] for label in labels}
+          assert len(defined) == len(labels)
+          for label in labels:
+              assert len(label["color"]) == 6 and all(c in "0123456789abcdefABCDEF" for c in label["color"])
+              name = quote(label["name"], safe="")
+              body = {"name": label["name"], "color": label["color"], "description": label["description"]}
+              if api("GET", f"/labels/{name}") is None:
+                  api("POST", "/labels", body)
+                  print(f"Created label {label['name']} #{label['color']}")
+              else:
+                  api("PATCH", f"/labels/{name}", body)
+                  print(f"Updated label {label['name']} #{label['color']}")
+
+          for number, names in config["issues"].items():
+              assert set(names) <= defined
+              issue = api("GET", f"/issues/{int(number)}")
+              if issue is None or issue["state"] != "open" or "pull_request" in issue:
+                  print(f"Skipped non-open issue #{number}")
+                  continue
+              existing = {item["name"] for item in issue.get("labels", [])}
+              missing = [name for name in names if name not in existing]
+              if missing:
+                  api("POST", f"/issues/{int(number)}/labels", {"labels": missing})
+                  print(f"Labeled issue #{number}: {', '.join(missing)}")
+          PY

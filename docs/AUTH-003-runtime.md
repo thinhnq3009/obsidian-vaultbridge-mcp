@@ -54,7 +54,7 @@ before preview, and never treats a cookie as an MCP bearer.
 
 ## Verified identity seam
 
-Pinned Better Auth/MCP/CIMD 1.7.13. `mcp()` is the **only** OAuth provider.
+Pinned Better Auth/MCP/CIMD/OAuth provider 1.7.16. `mcp()` is the **only** OAuth provider.
 Opaque access tokens expire after five minutes. The server-only companion
 endpoint uses the published `getOAuthProviderApi(...).requireActiveAccessToken`
 capability and client lookup; it never decodes unsigned JWTs or makes a public
@@ -109,3 +109,19 @@ Tests use synthetic vaults, real loopback HTTP and the production provider/
 SQLite/login/consent/verification path. Only external CIMD IO is substituted
 with deterministic remote-client documents; no real remote DNS/TLS, public
 proxy or ChatGPT compatibility is claimed.
+
+## #47 — maintained provider patch update
+
+All four direct Better Auth packages now pin 1.7.16 together, replacing the
+1.7.13 CIMD / 1.7.14 provider mix. This picks up the maintained
+[CIMD malformed HTTP status/reason handling in 1.7.15](https://github.com/better-auth/better-auth/releases/tag/v1.7.15)
+and [1.7.16 session/security corrections](https://github.com/better-auth/better-auth/releases/tag/v1.7.16).
+The Node CIMD transport remains the maintained public-address-only pinned
+connection implementation. No custom token, PKCE or metadata transport is added.
+
+The isolated recheck in PR #85 demonstrates that 1.7.16 still does not satisfy
+#60's family/concurrency contract. OAuth therefore stays explicit opt-in and
+experimental; this patch does not fulfill all #47 acceptance, migrate the
+production MCP transport to SDK v2, or approve public OAuth/release. Existing
+production-provider login/consent/PKCE/refresh/access-revoke and request-policy
+regressions are the integration checks for the dependency update.
