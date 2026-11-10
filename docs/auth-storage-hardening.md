@@ -69,3 +69,22 @@ disposition. Alert 7 and alert 8 API reads returned HTTP 404 on November 2,
 2026 with the current CLI credentials; the exact traces and live dispositions
 could not be verified. No alert was dismissed and no review thread resolved.
 Final-SHA CodeQL and reviewer approval remain required for #57.
+
+## #57 — fixture transport pinned at the socket boundary
+
+Owner lifecycle POSTs now use `http.request` with the literal numeric loopback
+host and the exact disposable listener port, rather than a generic fetch
+transport. The helper validates the full target origin and userinfo before IO,
+does not consult proxy settings, and rejects redirects. Separate cookies and
+CSRF/Origin headers are preserved. Tests prove alternate targets receive no
+requests and a 307 cannot replay credentials to a second local listener.
+The existing real recovery test still reads its temporary token and exercises
+password replacement and old-session invalidation through HTTP.
+
+Historical flow: PR #54 head `c02b0bd0b7a29f5be561c7e9dd22f562606dca59`,
+`test/ownerAuth.test.ts:47`, alert 9, conversation
+https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/pull/54#discussion_r4380176611.
+On 2026-11-03 the alert API reported historical alert 9 dismissed, with its
+latest develop instance at `79d9c56`. This is not reviewer approval or a
+remediation verdict. No alert disposition or conversation was changed; check
+the final PR's CodeQL and independently review the evidence before closure.
