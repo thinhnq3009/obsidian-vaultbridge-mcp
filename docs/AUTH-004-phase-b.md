@@ -177,3 +177,24 @@ to global policy. Revert Phase B to the #62 prerequisite to restore the
 verified-but-no-grant 403 barrier; revert #62 too to remove experimental runtime.
 Keep the additive grant/provider tables; do not drop owner tables. Back up and
 restore matching SQLite/WAL/session.key only with the service stopped.
+
+## #48 — one local grant revision per tool invocation
+
+Tool admission captures the live local grant revision. Its AsyncLocalStorage
+binding carries a reader that still rereads the grant for every operation,
+but returns no grant after any revision change. Every backend operation,
+search-folder check and final admission check uses that same binding. A paused
+tool cannot resume under newly granted paths or become valid again after a
+revoke/regrant cycle, including a no-op. A new tool invocation may use the
+newly approved grant. Parallel tools retain independent bindings.
+
+Two disposable regressions failed before the change: a paused read returned
+Secret content after its Notes grant was replaced, and a no-op succeeded after
+an identical grant was revoked/recreated. Both now deny with ACCESS_DENIED;
+fresh invocations and a different client still work. Existing search/cursor,
+symlink, revision, read-only and live-token checks remain active.
+
+This prevents a running tool from adopting replacement local rights. It does
+not bind tokens to upstream grant families: still-active tokens can use a new
+local grant on a future invocation, as already documented under #60. No
+production auth-mode or release gate changes.

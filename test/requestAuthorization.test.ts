@@ -679,6 +679,40 @@ describe("MCP tool family integration", () => {
   });
 });
 
+describe("AUTH-004 tool grant revision binding", () => {
+  it("does not let a paused tool adopt a revoked-and-regranted subtree", async () => {
+    const request = scoped();
+    let entered!: () => void;
+    let resume!: () => void;
+    const waiting = new Promise<void>((resolve) => { entered = resolve; });
+    const barrier = new Promise<void>((resolve) => { resume = resolve; });
+    const pending = run(request, "obsidian_read_note", async () => {
+      entered();
+      await barrier;
+      return request.readNote("Secret/A.md");
+    });
+    await waiting;
+    grants.revoke("grant-A");
+    grants.put(grant("A", "Secret"));
+    resume();
+    await expect(pending).rejects.toMatchObject({ code: "ACCESS_DENIED" });
+    // A fresh invocation may use the newly approved policy.
+    expect((await read(request, "Secret/A.md")).content).toContain("Secret/A.md");
+    await expect(read(request, "Notes/A.md")).rejects.toMatchObject({ code: "ACCESS_DENIED" });
+    expect((await read(scoped(context("B")), "Secret/A.md")).content).toContain("Secret/A.md");
+  });
+
+  it("rejects success when an identical grant is replaced during a no-op", async () => {
+    const request = scoped();
+    await expect(run(request, "obsidian_read_note", () => {
+      grants.revoke("grant-A");
+      grants.put(grant());
+      return Promise.resolve("stale admission");
+    })).rejects.toMatchObject({ code: "ACCESS_DENIED" });
+    expect((await read(request)).content).toContain("Notes/A.md");
+  });
+});
+
 describe("AUTH-004 tool-level no-op revalidation", () => {
   it("rejects a no-op before execution when provider revalidation fails", async () => {
     const verifyRequest = vi.fn(() => Promise.reject(new Error("Access token revoked")));

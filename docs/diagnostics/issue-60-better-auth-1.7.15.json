@@ -1,0 +1,252 @@
+{
+  "observed": "2026-11-04",
+  "platform": "Linux",
+  "commands": [
+    "npm --prefix scripts/spikes/better-auth-sdk-v2 run probe:opaque-local",
+    "npm --prefix scripts/spikes/better-auth-sdk-v2 run probe:concurrency"
+  ],
+  "runs": [
+    {
+      "exitCode": 1,
+      "result": {
+        "task": "AUTH-003",
+        "suite": "lifecycle",
+        "status": "BLOCKED",
+        "node": "v22.23.4",
+        "tokenFormat": "opaque",
+        "verifier": "getOAuthProviderApi.requireActiveAccessToken + resource policy",
+        "betterAuth": "1.7.15",
+        "mcp": "1.7.15",
+        "cimd": "1.7.15",
+        "oauthProvider": "1.7.15",
+        "sdk": "2.4.0",
+        "isolated": true,
+        "productionIntegrated": false,
+        "cimdTransport": "fixture, no remote network",
+        "exercised": [
+          "temporary SQLite + provider migrations",
+          "password login",
+          "RFC 9728 and authorization-server discovery",
+          "CIMD profile, DCR disabled",
+          "signed consent query/state tampering denied",
+          "S256 code exchange",
+          "missing/plain PKCE denied",
+          "wrong authorization resource/redirect denied",
+          "wrong verifier and token redirect denied",
+          "consumed/expired code denied",
+          "missing/invalid bearer challenge",
+          "generic SDK v2 tool invocation",
+          "wrong issuer/audience/scope denied",
+          "refresh rotation",
+          "revoked refresh denied",
+          "rotated refresh reuse denied",
+          "JWT-only middleware rejects opaque tokens",
+          "immediate opaque access revocation",
+          "concurrent revoked-child calls denied",
+          "opaque access expiry denied",
+          "expired refresh denied"
+        ],
+        "observations": [],
+        "failures": [
+          {
+            "contract": "Pre-rotation access token rejected immediately after refresh-family revocation",
+            "expectedStatus": 401,
+            "actualStatus": 200,
+            "acceptedConcurrentToolCalls": 3
+          },
+          {
+            "contract": "Intermediate pre-rotation access token rejected after refresh-family revocation",
+            "expectedStatus": 401,
+            "actualStatus": 200
+          }
+        ]
+      }
+    },
+    {
+      "exitCode": 1,
+      "result": {
+        "task": "AUTH-003",
+        "suite": "concurrency",
+        "status": "BLOCKED",
+        "node": "v22.23.4",
+        "tokenFormat": "opaque",
+        "verifier": "getOAuthProviderApi.requireActiveAccessToken + resource policy",
+        "betterAuth": "1.7.15",
+        "mcp": "1.7.15",
+        "cimd": "1.7.15",
+        "oauthProvider": "1.7.15",
+        "sdk": "2.4.0",
+        "isolated": true,
+        "productionIntegrated": false,
+        "cimdTransport": "fixture, no remote network",
+        "exercised": [
+          "wrong-client refresh/revoke ownership",
+          "unrelated same-client grant isolation",
+          "concurrent refresh versus revoke (both launch orders)",
+          "earlier access denial after concurrent revoke",
+          "raced descendant access and refresh denial when issued"
+        ],
+        "observations": [
+          {
+            "scenario": "refresh-first launch",
+            "refreshStatus": 500,
+            "revokeStatus": 400,
+            "descendantIssued": false
+          },
+          {
+            "scenario": "revoke-first launch",
+            "refreshStatus": 400,
+            "revokeStatus": 200,
+            "descendantIssued": false
+          }
+        ],
+        "failures": [
+          {
+            "contract": "refresh-first launch: concurrent revoke succeeds",
+            "expectedStatus": 200,
+            "actualStatus": 400
+          },
+          {
+            "contract": "refresh-first launch: concurrent refresh returns tokens or invalid_grant, never a server error",
+            "expectedStatus": [
+              200,
+              400
+            ],
+            "actualStatus": 500
+          },
+          {
+            "contract": "refresh-first launch: preserve unrelated same-client grant",
+            "expectedStatus": 200,
+            "actualStatus": 401
+          },
+          {
+            "contract": "revoke-first launch: preserve unrelated same-client grant",
+            "expectedStatus": 200,
+            "actualStatus": 401
+          }
+        ]
+      }
+    },
+    {
+      "exitCode": 1,
+      "result": {
+        "task": "AUTH-003",
+        "suite": "lifecycle",
+        "status": "BLOCKED",
+        "node": "v24.22.1",
+        "tokenFormat": "opaque",
+        "verifier": "getOAuthProviderApi.requireActiveAccessToken + resource policy",
+        "betterAuth": "1.7.15",
+        "mcp": "1.7.15",
+        "cimd": "1.7.15",
+        "oauthProvider": "1.7.15",
+        "sdk": "2.4.0",
+        "isolated": true,
+        "productionIntegrated": false,
+        "cimdTransport": "fixture, no remote network",
+        "exercised": [
+          "temporary SQLite + provider migrations",
+          "password login",
+          "RFC 9728 and authorization-server discovery",
+          "CIMD profile, DCR disabled",
+          "signed consent query/state tampering denied",
+          "S256 code exchange",
+          "missing/plain PKCE denied",
+          "wrong authorization resource/redirect denied",
+          "wrong verifier and token redirect denied",
+          "consumed/expired code denied",
+          "missing/invalid bearer challenge",
+          "generic SDK v2 tool invocation",
+          "wrong issuer/audience/scope denied",
+          "refresh rotation",
+          "revoked refresh denied",
+          "rotated refresh reuse denied",
+          "JWT-only middleware rejects opaque tokens",
+          "immediate opaque access revocation",
+          "concurrent revoked-child calls denied",
+          "opaque access expiry denied",
+          "expired refresh denied"
+        ],
+        "observations": [],
+        "failures": [
+          {
+            "contract": "Pre-rotation access token rejected immediately after refresh-family revocation",
+            "expectedStatus": 401,
+            "actualStatus": 200,
+            "acceptedConcurrentToolCalls": 3
+          },
+          {
+            "contract": "Intermediate pre-rotation access token rejected after refresh-family revocation",
+            "expectedStatus": 401,
+            "actualStatus": 200
+          }
+        ]
+      }
+    },
+    {
+      "exitCode": 1,
+      "result": {
+        "task": "AUTH-003",
+        "suite": "concurrency",
+        "status": "BLOCKED",
+        "node": "v24.22.1",
+        "tokenFormat": "opaque",
+        "verifier": "getOAuthProviderApi.requireActiveAccessToken + resource policy",
+        "betterAuth": "1.7.15",
+        "mcp": "1.7.15",
+        "cimd": "1.7.15",
+        "oauthProvider": "1.7.15",
+        "sdk": "2.4.0",
+        "isolated": true,
+        "productionIntegrated": false,
+        "cimdTransport": "fixture, no remote network",
+        "exercised": [
+          "wrong-client refresh/revoke ownership",
+          "unrelated same-client grant isolation",
+          "concurrent refresh versus revoke (both launch orders)",
+          "earlier access denial after concurrent revoke",
+          "raced descendant access and refresh denial when issued"
+        ],
+        "observations": [
+          {
+            "scenario": "refresh-first launch",
+            "refreshStatus": 500,
+            "revokeStatus": 400,
+            "descendantIssued": false
+          },
+          {
+            "scenario": "revoke-first launch",
+            "refreshStatus": 400,
+            "revokeStatus": 200,
+            "descendantIssued": false
+          }
+        ],
+        "failures": [
+          {
+            "contract": "refresh-first launch: concurrent revoke succeeds",
+            "expectedStatus": 200,
+            "actualStatus": 400
+          },
+          {
+            "contract": "refresh-first launch: concurrent refresh returns tokens or invalid_grant, never a server error",
+            "expectedStatus": [
+              200,
+              400
+            ],
+            "actualStatus": 500
+          },
+          {
+            "contract": "refresh-first launch: preserve unrelated same-client grant",
+            "expectedStatus": 200,
+            "actualStatus": 401
+          },
+          {
+            "contract": "revoke-first launch: preserve unrelated same-client grant",
+            "expectedStatus": 200,
+            "actualStatus": 401
+          }
+        ]
+      }
+    }
+  ]
+}

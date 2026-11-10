@@ -1,4 +1,33 @@
-# Issue #5 — current release handoff
+# Issue #5 — current registry verification
+
+Observed 2026-11-04. `latest` remains **0.1.0**, `alpha` remains
+**0.1.0-alpha.0**. The earlier alpha.1 handoff below is historical; stable
+0.1.0 was already published under #38. No registry changes are made here.
+
+[Current public metadata and limitations](issue-5-registry-2026-11-04.json)
+record the exact stable source SHA, integrity and attestation URL. Alpha.0
+metadata still supplies no gitHead/attestation, so exact-source provenance
+cannot be reconstructed or retroactively asserted from current source.
+
+The current smoke used to fail the real 0.1.0 artifact by requiring an owner UI
+that was added after its publication. Only the exact registry spec
+`obsidian-vaultbridge-mcp@0.1.0` may now use that historical UI-free contract,
+and only after matching its immutable version, source SHA, expected registry
+integrity and the installed consumer lockfile integrity. Local packs and
+all other specs retain the current mandatory owner-UI/artwork checks.
+Both canonical and legacy CLI names pass the real registry MCP round trip on
+Node 22.23.4 and 24.22.1 using disposable consumers and vaults. Production dependency
+audit remains part of that smoke; nothing is published or retagged.
+
+Use `npx obsidian-vaultbridge-mcp@0.1.0` for that known stable release. The
+old `alpha` channel is a different historical artifact. npm.io was still
+showing alpha.0 at the November 3 observation; its indexing/health algorithm
+is not established and no score improvement is promised. #5 remains open
+for immutable alpha.0 evidence and external-index follow-up.
+
+---
+
+# Historical alpha.1 release handoff (superseded)
 
 Status: **PREPARED_RELEASE_BLOCKED** (2026-10-24). Package preparation PR #25 is
 merged; #5 remains open because alpha.1 is not published and security/release
