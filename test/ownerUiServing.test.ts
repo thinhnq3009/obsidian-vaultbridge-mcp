@@ -65,7 +65,7 @@ describe("private owner UI serving", () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "vaultbridge-owner-bundle-"));
     const ui = path.join(root, "ui");
     fs.mkdirSync(path.join(ui, "assets"), { recursive: true });
-    fs.writeFileSync(path.join(ui, "owner.html"), "<!doctype html><main>React owner entry</main>");
+    fs.writeFileSync(path.join(ui, "owner.html"), "<!doctype html><link rel=\"stylesheet\" href=\"./assets/theme-1.css\"><main>React owner entry</main><script type=\"module\" src=\"./assets/app-1.js\"></script>");
     fs.writeFileSync(path.join(ui, "assets", "app-1.js"), "export const owner = true;");
     fs.writeFileSync(path.join(ui, "assets", "theme-1.css"), "body { color: white; }");
     fs.writeFileSync(path.join(ui, "assets", "private.map"), "must not be served");

@@ -1,6 +1,6 @@
 import http from "node:http";
 import { constants as fsConstants } from "node:fs";
-import { lstat, open, realpath } from "node:fs/promises";
+import { open, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Request, Response } from "express";
@@ -19,6 +19,8 @@ export function isOwnerRequestAllowed(peer: string | undefined, host: string | u
 }
 
 type OwnerUiMode = "legacy" | "react";
+type OwnerUiFile = { path: string; mime: string; dev: number; ino: number };
+type OwnerUiManifest = { entry: OwnerUiFile; assets: Map<string, OwnerUiFile> };
 
 export async function startOwnerServer(options: { directory: string; vaultPath: string; port: number; ownerUsername?: string; ownerPassword?: string; recover?: boolean; maxFailures?: number; windowSeconds?: number; ownerUiMode?: OwnerUiMode; ownerUiDirectory?: string; oauth?: Omit<OAuthProviderOptions, "ownerOrigin"> }) {
   z.number().int().min(0).max(65535).parse(options.port);
@@ -33,6 +35,63 @@ export async function startOwnerServer(options: { directory: string; vaultPath: 
     import.meta.url.includes(`${path.sep}dist${path.sep}auth${path.sep}`) ? ".." : "../../dist",
     "owner-ui",
   );
+  let ownerUiManifestPromise: Promise<OwnerUiManifest | undefined> | undefined;
+  async function inspectOwnerUiFile(root: string, candidate: string, relativePath: string): Promise<OwnerUiFile> {
+    const canonicalPath = await realpath(candidate);
+    if (!canonicalPath.startsWith(`${root}${path.sep}`)) throw new Error("Owner UI file escapes its bundle directory");
+    const handle = await open(canonicalPath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile()) throw new Error("Owner UI asset is not a regular file");
+      const mime = relativePath.endsWith(".html") ? "text/html; charset=utf-8"
+        : relativePath.endsWith(".js") ? "text/javascript; charset=utf-8"
+          : relativePath.endsWith(".css") ? "text/css; charset=utf-8"
+            : relativePath.endsWith(".png") ? "image/png"
+              : relativePath.endsWith(".svg") ? "image/svg+xml"
+                : relativePath.endsWith(".woff") ? "font/woff" : "font/woff2";
+      return { path: canonicalPath, mime, dev: stat.dev, ino: stat.ino };
+    } finally {
+      await handle.close();
+    }
+  }
+  async function readOwnerUiFile(file: OwnerUiFile): Promise<Buffer> {
+    const handle = await open(file.path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.dev !== file.dev || stat.ino !== file.ino) {
+        throw new Error("Owner UI bundle changed while serving an asset");
+      }
+      return await handle.readFile();
+    } finally {
+      await handle.close();
+    }
+  }
+  async function loadOwnerUiManifest(): Promise<OwnerUiManifest | undefined> {
+    if (!ownerUiManifestPromise) {
+      ownerUiManifestPromise = (async () => {
+        try {
+          const root = await realpath(ownerUiDirectory);
+          const entry = await inspectOwnerUiFile(root, path.join(root, "owner.html"), "owner.html");
+          const entryHtml = (await readOwnerUiFile(entry)).toString("utf8");
+          const assetsDirectory = await realpath(path.join(root, "assets"));
+          if (!assetsDirectory.startsWith(`${root}${path.sep}`)) throw new Error("Owner UI asset directory escapes its bundle");
+          const assetEntries = await readdir(assetsDirectory, { withFileTypes: true });
+          const assets = new Map<string, OwnerUiFile>();
+          for (const asset of assetEntries) {
+            if (!asset.isFile() || !/^[A-Za-z0-9._-]+\.(?:js|css|png|svg|woff2?)$/u.test(asset.name)) continue;
+            assets.set(asset.name, await inspectOwnerUiFile(root, path.join(assetsDirectory, asset.name), `assets/${asset.name}`));
+          }
+          const required = [...entryHtml.matchAll(/(?:src|href)="\.\/assets\/([A-Za-z0-9._-]+\.(?:js|css|png|svg|woff2?))"/gu)]
+            .map((match) => match[1]!);
+          if (!required.length || required.some((name) => !assets.has(name))) throw new Error("Owner UI bundle manifest is incomplete");
+          return { entry, assets };
+        } catch {
+          return undefined;
+        }
+      })();
+    }
+    return ownerUiManifestPromise;
+  }
   app.use((request, response, next) => {
     response.set({
       "Cache-Control": "no-store",
@@ -66,58 +125,41 @@ export async function startOwnerServer(options: { directory: string; vaultPath: 
     standardHeaders: "draft-8", legacyHeaders: false,
   }));
   app.use(express.json({ limit: "8kb", inflate: false, strict: true }));
-  async function sendOwnerUiAsset(relativePath: string, response: Response): Promise<void> {
-    if (relativePath.includes("\\") || relativePath.split("/").some((part) => !part || part === "." || part === ".." || part.startsWith("."))) {
-      response.sendStatus(404);
-      return;
-    }
-    const isEntry = relativePath === "owner.html";
-    const isAsset = /^assets\/[A-Za-z0-9._-]+\.(?:js|css|png|svg|woff2?)$/u.test(relativePath);
-    if (!isEntry && !isAsset) {
-      response.sendStatus(404);
+  async function sendOwnerUiFile(file: OwnerUiFile | undefined, response: Response): Promise<void> {
+    if (!file) {
+      response.status(503).type("text/plain").send("Owner UI bundle unavailable. Build the package or select legacy mode.");
       return;
     }
     try {
-      const root = await realpath(ownerUiDirectory);
-      const file = await realpath(path.join(root, relativePath));
-      if (!file.startsWith(`${root}${path.sep}`)) {
-        response.sendStatus(404);
-        return;
-      }
-      const expected = await lstat(file);
-      if (!expected.isFile() || expected.isSymbolicLink()) {
-        response.sendStatus(404);
-        return;
-      }
-      const handle = await open(file, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
-      let content: Buffer;
-      try {
-        const actual = await handle.stat();
-        if (!actual.isFile() || actual.dev !== expected.dev || actual.ino !== expected.ino) {
-          response.sendStatus(404);
-          return;
-        }
-        content = await handle.readFile();
-      } finally {
-        await handle.close();
-      }
-      const mime = relativePath.endsWith(".html") ? "text/html; charset=utf-8"
-        : relativePath.endsWith(".js") ? "text/javascript; charset=utf-8"
-          : relativePath.endsWith(".css") ? "text/css; charset=utf-8"
-            : relativePath.endsWith(".png") ? "image/png"
-              : relativePath.endsWith(".svg") ? "image/svg+xml"
-                : relativePath.endsWith(".woff") ? "font/woff" : "font/woff2";
-      response.set("Content-Type", mime).send(content);
+      response.set("Content-Type", file.mime).send(await readOwnerUiFile(file));
     } catch {
       response.status(503).type("text/plain").send("Owner UI bundle unavailable. Build the package or select legacy mode.");
     }
   }
   if (options.ownerUiMode === "react") {
-    app.get(["/login", "/recover"], async (_request, response) => { await sendOwnerUiAsset("owner.html", response); });
+    app.get(["/login", "/recover"], async (_request, response) => {
+      const manifest = await loadOwnerUiManifest();
+      await sendOwnerUiFile(manifest?.entry, response);
+    });
     app.get("/assets/*asset", async (request, response) => {
       const asset = request.params.asset;
-      const relativePath = Array.isArray(asset) ? asset.join("/") : asset;
-      await sendOwnerUiAsset(`assets/${relativePath}`, response);
+      const assetName = typeof asset === "string" ? asset : asset.length === 1 ? asset[0] : undefined;
+      if (assetName === undefined) { response.sendStatus(404); return; }
+      if (!/^[A-Za-z0-9._-]+\.(?:js|css|png|svg|woff2?)$/u.test(assetName)) {
+        response.sendStatus(404);
+        return;
+      }
+      const manifest = await loadOwnerUiManifest();
+      if (!manifest) {
+        response.status(503).type("text/plain").send("Owner UI bundle unavailable. Build the package or select legacy mode.");
+        return;
+      }
+      const assetFile = manifest.assets.get(assetName);
+      if (!assetFile) {
+        response.sendStatus(404);
+        return;
+      }
+      await sendOwnerUiFile(assetFile, response);
     });
   }
   app.get(["/", "/admin", "/consent", ...(options.ownerUiMode === "react" ? [] : ["/login", "/recover"])], (_request, response) => {
