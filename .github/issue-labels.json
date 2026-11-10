@@ -1,0 +1,133 @@
+{
+  "labels": [
+    {
+      "name": "area:oauth",
+      "color": "2563EB",
+      "description": "OAuth protocol, identity, grants and authentication"
+    },
+    {
+      "name": "area:security",
+      "color": "7C3AED",
+      "description": "Security analysis, threat mitigation and CodeQL"
+    },
+    {
+      "name": "area:release",
+      "color": "0891B2",
+      "description": "Packaging, npm publication and release gates"
+    },
+    {
+      "name": "type:feature",
+      "color": "0D9488",
+      "description": "New functionality or significant capability"
+    },
+    {
+      "name": "type:bug",
+      "color": "DC2626",
+      "description": "Defect, regression or security correctness fix"
+    },
+    {
+      "name": "type:chore",
+      "color": "64748B",
+      "description": "Maintenance, tooling and release hygiene"
+    },
+    {
+      "name": "type:test",
+      "color": "9333EA",
+      "description": "Testing and verification work"
+    },
+    {
+      "name": "status:blocked",
+      "color": "B91C1C",
+      "description": "Cannot be completed until a documented dependency is resolved"
+    },
+    {
+      "name": "status:in-progress",
+      "color": "2563EB",
+      "description": "Implementation or acceptance remains in progress"
+    },
+    {
+      "name": "status:needs-review",
+      "color": "D97706",
+      "description": "Awaiting evidence, review or final disposition"
+    },
+    {
+      "name": "P0",
+      "color": "991B1B",
+      "description": "Critical"
+    },
+    {
+      "name": "P1",
+      "color": "EA580C",
+      "description": "High priority"
+    },
+    {
+      "name": "P2",
+      "color": "CA8A04",
+      "description": "Medium priority"
+    },
+    {
+      "name": "P3",
+      "color": "16A34A",
+      "description": "Low priority"
+    },
+    {
+      "name": "Secure",
+      "color": "7C3AED",
+      "description": "Security-related issue"
+    }
+  ],
+  "issues": {
+    "5": [
+      "area:release",
+      "type:chore",
+      "status:needs-review"
+    ],
+    "39": [
+      "area:oauth",
+      "type:feature",
+      "status:in-progress"
+    ],
+    "47": [
+      "area:oauth",
+      "type:feature",
+      "status:in-progress"
+    ],
+    "48": [
+      "area:oauth",
+      "type:feature",
+      "status:in-progress"
+    ],
+    "49": [
+      "area:oauth",
+      "type:test",
+      "status:in-progress"
+    ],
+    "55": [
+      "area:security",
+      "type:bug",
+      "status:needs-review",
+      "Secure",
+      "P3"
+    ],
+    "56": [
+      "area:security",
+      "type:bug",
+      "status:needs-review",
+      "Secure",
+      "P3"
+    ],
+    "57": [
+      "area:security",
+      "type:bug",
+      "status:needs-review",
+      "Secure",
+      "P3"
+    ],
+    "60": [
+      "area:oauth",
+      "area:security",
+      "type:bug",
+      "status:blocked"
+    ]
+  }
+}
