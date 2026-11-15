@@ -59,16 +59,23 @@ No real vault or user setup token is used by this fixture. The current
 bootstrap no longer uses that historical enrollment flow, but recovery still
 sends a disposable file token, so changing line numbers is not remediation.
 
-The test POST helper now explicitly rejects any URL outside its exact numeric
-loopback origin, including alternate ports, and disables following redirects.
-A regression verifies invalid targets are rejected before `fetch` is called.
-Successful recovery and session invalidation coverage is retained.
+The test POST helper validates the complete origin before IO, then uses
+`http.request` with a literal `127.0.0.1` host and the listener's exact bound
+port. It does not use environment proxy settings and rejects redirects instead
+of replaying credentials. Regressions verify that alternate hostname, IPv4 and
+IPv6 targets, alternate ports, proxy variables and redirects cannot send the
+fixture token to another listener. Successful recovery and session
+invalidation coverage is retained.
 
 This supports a bounded local-fixture interpretation, **not** a scanner
 disposition. Alert 7 and alert 8 API reads returned HTTP 404 on November 2,
 2026 with the current CLI credentials; the exact traces and live dispositions
 could not be verified. No alert was dismissed and no review thread resolved.
 Final-SHA CodeQL and reviewer approval remain required for #57.
+
+CodeQL alert #20 remains open on `test/loopbackRequest.ts:35` in PR #84. Its
+file-to-request trace is not dismissed by these tests; review the exact trace
+and record an evidence-based disposition after the final SHA is scanned.
 
 ## #57 — fixture transport pinned at the socket boundary
 
