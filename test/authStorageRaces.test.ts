@@ -112,6 +112,26 @@ describe("owner storage descriptor validation", () => {
     expect(fs.readFileSync(databasePath, "utf8")).toBe("do not open or modify");
   });
 
+  it("never generates a key when a competing database appears before exclusive creation", async () => {
+    const secretPath = path.join(directory, "session.key");
+    const databasePath = path.join(directory, "auth.sqlite");
+    fs.unlinkSync(secretPath);
+    const open = fs.openSync;
+    let created = false;
+    vi.spyOn(fs, "openSync").mockImplementation((file, flags, mode) => {
+      if (file === databasePath && flags === "wx" && !created) {
+        created = true;
+        fs.writeFileSync(databasePath, "unrelated database; preserve", { mode: 0o600 });
+      }
+      return open(file, flags, mode);
+    });
+    await expect(openAuthStorage(directory, vault)).rejects.toThrow();
+    expect(created).toBe(true);
+    expect(fs.existsSync(secretPath)).toBe(false);
+    expect(fs.readFileSync(databasePath, "utf8")).toBe("unrelated database; preserve");
+    expect(fs.existsSync(`${directory}.lock`)).toBe(false);
+  });
+
   it("bounds key reads and releases descriptors and locks after malformed content", async () => {
     const secretPath = path.join(directory, "session.key");
     fs.writeFileSync(secretPath, "x".repeat(1024 * 1024));
