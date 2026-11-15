@@ -1,0 +1,50 @@
+{
+  "flow": [
+    "built private React login served with strict CSP",
+    "invalid credentials are generic and rate limits honor Retry-After",
+    "bootstrap login requires forced password rotation",
+    "expired rotation session returns to login before retry",
+    "password rotation invalidates the previous session and returns to login",
+    "signed OAuth query remains byte-for-byte intact through login",
+    "rotated owner can sign in and reach the existing admin route",
+    "sign out returns to unauthenticated login",
+    "recovery form is not exposed in normal owner mode",
+    "one-time local recovery completes and returns to fresh login",
+    "recovered owner can sign in with the replacement password"
+  ],
+  "viewports": [
+    {
+      "width": 1672,
+      "height": 941,
+      "noHorizontalOverflow": true
+    },
+    {
+      "width": 1440,
+      "height": 900,
+      "noHorizontalOverflow": true
+    },
+    {
+      "width": 1280,
+      "height": 800,
+      "noHorizontalOverflow": true
+    },
+    {
+      "width": 768,
+      "height": 1024,
+      "noHorizontalOverflow": true
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "noHorizontalOverflow": true
+    },
+    {
+      "width": 320,
+      "height": 700,
+      "noHorizontalOverflow": true
+    }
+  ],
+  "errors": [],
+  "signedQueryPreserved": true,
+  "cspViolations": 0
+}

@@ -17,6 +17,7 @@ describe("OAuth development launcher", () => {
     expect(dev.mcpHttpHost).toBe("127.0.0.1");
     expect(dev.mcpHttpPort).toBe(39145);
     expect(dev.mcpOwnerPort).toBe(39146);
+    expect(dev.mcpOwnerUiMode).toBe("legacy");
     expect(dev.mcpOauthIssuer).toBe("http://127.0.0.1:39145/api/auth");
     expect(dev.mcpAllowedHosts).toEqual(["127.0.0.1"]);
     expect(dev.mcpVaultId).toMatch(/^dev-[a-f0-9]{32}$/u);
@@ -43,6 +44,8 @@ describe("OAuth development launcher", () => {
     expect(createDevOauthConfig(base, [], { MCP_TRANSPORT: "stdio" }).mcpTransport).toBe("http");
     expect(config({}, ["--port", "42145"]).mcpOauthIssuer).toBe("http://127.0.0.1:42145/api/auth");
     expect(config({}, ["--owner-port=42146"]).mcpOwnerPort).toBe(42146);
+    expect(config({ MCP_OWNER_UI_MODE: "react" }).mcpOwnerUiMode).toBe("react");
+    expect(() => config({ MCP_OWNER_UI_MODE: "public" })).toThrow(/Invalid configuration/u);
   });
 
   it("supports one public HTTPS tunnel with an explicit trusted proxy acknowledgement", () => {
