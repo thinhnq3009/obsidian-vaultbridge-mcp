@@ -40,11 +40,8 @@ permission rejection, locking and recovery checks.
 Identity comparisons detect ordinary persistent swaps but cannot make its
 open atomic against a malicious writer that swaps entries away and back.
 The same limitation applies to directory/ancestor changes, SQLite sidecars,
-Windows ACL pathname operations, and the initializer rollback's identity-check
-followed by pathname unlink. None of these pathname operations is atomic
-against a writer that can mutate private app data between calls. No claim is
-made that a same-user attacker with write access to private app data is
-sandboxed.
+and Windows ACL pathname operations. No claim is made that a same-user
+attacker with write access to private app data is sandboxed.
 
 Do not close #55 or #56 until the exact scanner paths and supported-platform
 behavior have been reviewed on the final SHA. Eliminating all pathname races
