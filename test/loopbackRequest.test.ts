@@ -22,10 +22,50 @@ describe("file-backed fixture credential transport", () => {
   it("rejects alternate origins and credentials before reaching any listener", async () => {
     let requests = 0;
     const origin = await listen((_request, response) => { requests++; response.end(); });
-    for (const target of ["https://example.invalid/setup", "//example.invalid/setup", "http://127.0.0.1:1/setup", origin.replace("127.0.0.1", "localhost"), origin.replace("http://", "http://user:password@")]) {
+    const port = new URL(origin).port;
+    for (const target of [
+      "https://example.invalid/setup",
+      "//example.invalid/setup",
+      "http://127.0.0.1:1/setup",
+      `http://[::1]:${port}/setup`,
+      origin.replace("127.0.0.1", "127.0.0.2"),
+      origin.replace("127.0.0.1", "localhost"),
+      origin.replace("http://", "http://user:password@"),
+    ]) {
       await expect(postLoopbackJson(origin, target, { token: "disposable" })).rejects.toThrow("disposable loopback");
     }
     expect(requests).toBe(0);
+  });
+
+  it("bypasses proxy environment variables and connects only to the loopback listener", async () => {
+    let directRequests = 0;
+    let proxyRequests = 0;
+    const proxy = await listen((_request, response) => { proxyRequests++; response.end(); });
+    const origin = await listen((_request, response) => {
+      directRequests++;
+      response.end(JSON.stringify({ ok: true }));
+    });
+    const proxyVariables = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"] as const;
+    const previousValues = new Map(proxyVariables.map((name) => [name, process.env[name]]));
+
+    try {
+      process.env.HTTP_PROXY = proxy;
+      process.env.HTTPS_PROXY = proxy;
+      process.env.ALL_PROXY = proxy;
+      delete process.env.NO_PROXY;
+
+      const response = await postLoopbackJson(origin, "/setup", { token: "disposable" });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ ok: true });
+      expect(directRequests).toBe(1);
+      expect(proxyRequests).toBe(0);
+    } finally {
+      for (const [name, value] of previousValues) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
   });
 
   it("does not replay credentials to a redirect target", async () => {
