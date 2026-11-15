@@ -129,6 +129,17 @@ export async function openAuthStorage(directory: string, vaultPath: string) {
   let database: DatabaseSync | undefined;
   let databaseFd: number | undefined;
   try {
+    // Acquiring the process lock yields. Recheck the same private directory
+    // before any credential/database operation uses its pathname.
+    const lockedStat = fs.lstatSync(directory);
+    if (!lockedStat.isDirectory() || lockedStat.isSymbolicLink()
+      || lockedStat.dev !== stat.dev || lockedStat.ino !== stat.ino) {
+      throw new Error("Owner auth directory changed while acquiring its lock");
+    }
+    if (process.platform !== "win32" && ((lockedStat.mode & 0o077) !== 0 || lockedStat.uid !== process.getuid?.())) {
+      throw new Error("Owner auth directory must be owned by this user with mode 0700");
+    }
+    assertOutsideVault(directory, vaultPath);
     const secretPath = path.join(directory, "session.key");
     const databasePath = path.join(directory, "auth.sqlite");
     if (!privateEntry(secretPath)) {
