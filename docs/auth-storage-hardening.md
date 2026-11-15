@@ -59,13 +59,40 @@ No real vault or user setup token is used by this fixture. The current
 bootstrap no longer uses that historical enrollment flow, but recovery still
 sends a disposable file token, so changing line numbers is not remediation.
 
-The test POST helper now explicitly rejects any URL outside its exact numeric
-loopback origin, including alternate ports, and disables following redirects.
-A regression verifies invalid targets are rejected before `fetch` is called.
-Successful recovery and session invalidation coverage is retained.
+The test POST helper validates the complete origin before IO, then uses
+`http.request` with a literal `127.0.0.1` host, the listener's exact bound
+port, and a one-off agent rather than Node's process-wide proxy-configurable
+agent. It rejects redirects instead of replaying credentials. Regressions run
+with Node's environment-proxy option enabled and verify that alternate
+hostname, IPv4 and IPv6 targets, alternate ports, proxy variables and redirects
+cannot send the fixture token to another listener. Successful recovery and
+session invalidation coverage is retained.
 
 This supports a bounded local-fixture interpretation, **not** a scanner
 disposition. Alert 7 and alert 8 API reads returned HTTP 404 on November 2,
 2026 with the current CLI credentials; the exact traces and live dispositions
 could not be verified. No alert was dismissed and no review thread resolved.
 Final-SHA CodeQL and reviewer approval remain required for #57.
+
+CodeQL alert #20 remains open on `test/loopbackRequest.ts:35` in PR #84. Its
+file-to-request trace is not dismissed by these tests; review the exact trace
+and record an evidence-based disposition after the final SHA is scanned.
+
+## #57 — fixture transport pinned at the socket boundary
+
+Owner lifecycle POSTs now use `http.request` with the literal numeric loopback
+host and the exact disposable listener port, rather than a generic fetch
+transport. The helper validates the full target origin and userinfo before IO,
+does not consult proxy settings, and rejects redirects. Separate cookies and
+CSRF/Origin headers are preserved. Tests prove alternate targets receive no
+requests and a 307 cannot replay credentials to a second local listener.
+The existing real recovery test still reads its temporary token and exercises
+password replacement and old-session invalidation through HTTP.
+
+Historical flow: PR #54 head `c02b0bd0b7a29f5be561c7e9dd22f562606dca59`,
+`test/ownerAuth.test.ts:47`, alert 9, conversation
+https://github.com/thinhnq3009/obsidian-vaultbridge-mcp/pull/54#discussion_r4380176611.
+On 2026-11-03 the alert API reported historical alert 9 dismissed, with its
+latest develop instance at `79d9c56`. This is not reviewer approval or a
+remediation verdict. No alert disposition or conversation was changed; check
+the final PR's CodeQL and independently review the evidence before closure.

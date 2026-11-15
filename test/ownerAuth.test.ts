@@ -7,6 +7,8 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { postLoopbackJson } from "./loopbackRequest.js";
+
 import { createOwnerAuth } from "../src/auth/owner.js";
 import { startOwnerServer, isOwnerRequestAllowed } from "../src/auth/http.js";
 import { assertOutsideVault, authDataDirectory, migrateOwnerSchema, openAuthStorage } from "../src/auth/storage.js";
@@ -49,15 +51,7 @@ async function start(extra: { recover?: boolean; maxFailures?: number; windowSec
   return service;
 }
 async function post(route: string, body: unknown, headers: Record<string, string> = {}) {
-  const target = new URL(route, service!.origin);
-  if (target.protocol !== "http:" || target.hostname !== "127.0.0.1" ||
-      target.origin !== service!.origin || target.username || target.password) {
-    throw new Error("Owner test requests must stay on their disposable loopback listener");
-  }
-  return fetch(target, {
-    redirect: "error",
-    method: "POST", headers: { "Content-Type": "application/json", Origin: service!.origin, "X-VaultBridge-CSRF": "1", ...headers }, body: JSON.stringify(body),
-  });
+  return postLoopbackJson(service!.origin, route, body, headers);
 }
 async function login() {
   const response = await post("/api/auth/sign-in/email", { username: email, password });
