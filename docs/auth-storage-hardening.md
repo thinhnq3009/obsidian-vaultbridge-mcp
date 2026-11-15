@@ -60,12 +60,13 @@ bootstrap no longer uses that historical enrollment flow, but recovery still
 sends a disposable file token, so changing line numbers is not remediation.
 
 The test POST helper validates the complete origin before IO, then uses
-`http.request` with a literal `127.0.0.1` host and the listener's exact bound
-port. It does not use environment proxy settings and rejects redirects instead
-of replaying credentials. Regressions verify that alternate hostname, IPv4 and
-IPv6 targets, alternate ports, proxy variables and redirects cannot send the
-fixture token to another listener. Successful recovery and session
-invalidation coverage is retained.
+`http.request` with a literal `127.0.0.1` host, the listener's exact bound
+port, and a one-off agent rather than Node's process-wide proxy-configurable
+agent. It rejects redirects instead of replaying credentials. Regressions run
+with Node's environment-proxy option enabled and verify that alternate
+hostname, IPv4 and IPv6 targets, alternate ports, proxy variables and redirects
+cannot send the fixture token to another listener. Successful recovery and
+session invalidation coverage is retained.
 
 This supports a bounded local-fixture interpretation, **not** a scanner
 disposition. Alert 7 and alert 8 API reads returned HTTP 404 on November 2,

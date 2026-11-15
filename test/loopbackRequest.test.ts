@@ -1,7 +1,10 @@
 import http from "node:http";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { postLoopbackJson } from "./loopbackRequest.js";
 
+const execFileAsync = promisify(execFile);
 const servers: http.Server[] = [];
 afterEach(async () => {
   for (const server of servers.splice(0)) await new Promise<void>((resolve, reject) => {
@@ -45,27 +48,27 @@ describe("file-backed fixture credential transport", () => {
       directRequests++;
       response.end(JSON.stringify({ ok: true }));
     });
-    const proxyVariables = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"] as const;
-    const previousValues = new Map(proxyVariables.map((name) => [name, process.env[name]]));
+    const helperUrl = new URL("./loopbackRequest.ts", import.meta.url).href;
+    const source = `import { postLoopbackJson } from ${JSON.stringify(helperUrl)};\n` +
+      `const response = await postLoopbackJson(${JSON.stringify(origin)}, "/setup", { token: "disposable" });\n` +
+      "console.log(await response.text());\n";
+    const { stdout } = await execFileAsync(process.execPath, [
+      "--use-env-proxy", "--import", "tsx", "--input-type=module", "-e", source,
+    ], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        HTTP_PROXY: proxy,
+        HTTPS_PROXY: proxy,
+        ALL_PROXY: proxy,
+        NO_PROXY: "",
+      },
+      timeout: 10000,
+    });
 
-    try {
-      process.env.HTTP_PROXY = proxy;
-      process.env.HTTPS_PROXY = proxy;
-      process.env.ALL_PROXY = proxy;
-      delete process.env.NO_PROXY;
-
-      const response = await postLoopbackJson(origin, "/setup", { token: "disposable" });
-
-      expect(response.status).toBe(200);
-      expect(await response.json()).toEqual({ ok: true });
-      expect(directRequests).toBe(1);
-      expect(proxyRequests).toBe(0);
-    } finally {
-      for (const [name, value] of previousValues) {
-        if (value === undefined) delete process.env[name];
-        else process.env[name] = value;
-      }
-    }
+    expect(directRequests).toBe(1);
+    expect(proxyRequests).toBe(0);
+    expect(JSON.parse(stdout.trim())).toEqual({ ok: true });
   });
 
   it("does not replay credentials to a redirect target", async () => {

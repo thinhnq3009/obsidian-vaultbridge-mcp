@@ -12,6 +12,8 @@ export async function postLoopbackJson(origin: string, route: string, body: unkn
   }
   return new Promise((resolve, reject) => {
     const request = http.request({
+      // Ignore a proxy-enabled globalAgent; this fixture only uses its listener.
+      agent: false,
       hostname: "127.0.0.1", port: target.port, path: target.pathname + target.search,
       method: "POST", headers: {
         "Content-Type": "application/json", Origin: origin, "X-VaultBridge-CSRF": "1", ...extraHeaders,
