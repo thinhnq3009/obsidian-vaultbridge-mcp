@@ -38,6 +38,7 @@ export type AppConfig = {
   mcpOauthIssuer?: string;
   mcpAuthDirectory?: string;
   mcpOwnerPort?: number;
+  mcpOwnerUiMode?: "legacy" | "react";
   mcpOwnerUsername?: string;
   mcpOwnerPassword?: string;
   mcpVaultId?: string;
