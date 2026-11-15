@@ -22,10 +22,10 @@ is authorized by this document.
 
 ## 2. Branch cleanup
 
-### 2.1 Zero-ahead deletion candidates
+### 2.1 Zero-ahead deletion inventory
 
 All branches below compared as `ahead_by=0` against snapshot develop. Before
-deleting, re-check the branch SHA, open PR head references, deployment/release
+deletion, re-check the branch SHA, open PR head references, deployment/release
 configuration and automation dependencies. Delete only the branch ref.
 
 ```text
@@ -62,6 +62,17 @@ feat/issue-48-request-vault-authz
 feat/issue-49-single-tunnel-oauth
 feat/owner-env-bootstrap
 ```
+
+**Execution result (2026-11-15):** 31 of these 32 branches were rechecked and
+deleted with normal branch deletion (no force push). The exception,
+`codex/issue-5-release-hygiene`, remains because `docs/releases/issue-5-artifact.json`
+records it as release-artifact provenance; retain it until issue #5 is reconciled.
+The GitHub branch list marked `main` and `develop` protected; both and
+`release/v0.1.0` were retained. The 31 deleted refs were zero-ahead of the
+snapshot `develop`, unprotected, not open-PR heads, and not referenced by the
+repository's workflow branch filters. GitHub deployment integration settings
+were not exposed by the available read interface, so the release-provenance
+branch was retained conservatively.
 
 ### 2.2 Keep these 22 unique-commit branches for triage
 
@@ -248,10 +259,13 @@ Done means acceptance tests pass on final integrated SHA, CodeQL findings have
 evidence-backed dispositions, substantive review threads are resolved for a reason,
 docs link to evidence, and issue is closed with correct reason.
 
-## 7. Tooling limitation in this sweep
+## 7. Phase record
 
-The connected GitHub toolset available in this session supports listing/comparing
-branches and repository content writes, but exposes no branch-delete operation.
-Therefore no branch was deleted. Use an authorized GitHub admin connection or
-authenticated local Git client to delete the 32 candidates after repeating checks.
-Never force-update or delete protected branches.
+- Branch cleanup completed as recorded in Section 2.1. No protected branch was changed.
+- PRs #82, #83 and #84 remain Draft and unmerged pending final-SHA CI/CodeQL and
+  security acceptance. CodeQL alert #20 on #84 remains open with its review
+  thread unresolved; no alert was dismissed and no issue was closed.
+- OAuth issues #47–#49/#60, release evidence #5, integrated acceptance #39 and
+  FE-002A remain untouched in this phase.
+- Continue only after the security PR gates have a final evidence-based
+  disposition. Do not treat green CI alone as sufficient security acceptance.
