@@ -65,7 +65,7 @@
   },
   "dependencies": {
     "@better-auth/cimd": "1.7.16",
-    "@better-auth/mcp": "1.7.16",
+    "@better-auth/mcp": "1.7.25",
     "@better-auth/oauth-provider": "1.7.16",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "better-auth": "1.7.16",
